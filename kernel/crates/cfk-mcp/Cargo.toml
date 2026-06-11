@@ -1,0 +1,32 @@
+[package]
+name = "cfk-mcp"
+description = "Claude-Factory kernel MCP server — rmcp stdio server exposing cf_* tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cfk"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+cfk-core = { path = "../cfk-core" }
+cfk-engine = { path = "../cfk-engine" }
+rmcp = { workspace = true }
+rmcp-macros = { workspace = true }
+schemars = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]

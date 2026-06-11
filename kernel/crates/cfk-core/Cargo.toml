@@ -1,0 +1,23 @@
+[package]
+name = "cfk-core"
+description = "Claude-Factory kernel pure functional core — state machines, domain types, routing (no I/O)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nutype = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tera = { workspace = true }
+
+[dev-dependencies]

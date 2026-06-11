@@ -1,0 +1,76 @@
+//! Step types — the unit of work the kernel dispatches to the conductor.
+
+use crate::types::{
+    ids::{StepId, WorkItemId},
+    phase::PhaseKind,
+    routing::ExecutorSpec,
+};
+use nutype::nutype;
+use serde::{Deserialize, Serialize};
+
+/// A human-readable prompt the conductor passes verbatim to the executor.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct StepPrompt(String);
+
+/// The action the conductor must take for this step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum StepAction {
+    /// Spawn an LLM agent with the given executor spec and prompt.
+    SpawnAgent {
+        executor: ExecutorSpec,
+        prompt: StepPrompt,
+        /// JSON Schema the agent's output must conform to (if present).
+        output_schema: Option<serde_json::Value>,
+    },
+    /// The kernel will run a deterministic check itself (tests, linter, etc.).
+    RunCheck {
+        check_name: CheckName,
+    },
+    /// A human decision is needed before the step can proceed.
+    AskHuman {
+        question: HumanQuestion,
+    },
+    /// No work is currently ready. The conductor should display status and stop.
+    Idle {
+        reason: IdleReason,
+    },
+}
+
+/// The name of a deterministic check configured in the project.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct CheckName(String);
+
+/// A question presented to the human operator for a required decision.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct HumanQuestion(String);
+
+/// The reason the factory is idle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleReason {
+    NoReadyWork,
+    WaitingOnEscalation,
+    AllPhasesComplete,
+}
+
+/// A step ready for the conductor to execute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadyStep {
+    pub step_id: StepId,
+    pub work_item_id: WorkItemId,
+    pub phase: PhaseKind,
+    pub action: StepAction,
+}

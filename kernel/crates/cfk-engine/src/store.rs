@@ -1,0 +1,48 @@
+//! Event store: `SQLite` operational cache + JSON export to `.claude-factory/events/v1/`.
+//!
+//! The kernel is event-sourced. Every state change produces an event written to:
+//! 1. `SQLite` (fast operational queries, survives restarts)
+//! 2. `.claude-factory/events/v1/<event-id>.json` (git-tracked, audit trail)
+//!
+//! Replay from JSON export can reconstruct all `SQLite` state — the JSON export
+//! is the authoritative record.
+
+use std::path::PathBuf;
+
+/// Path to the git-tracked JSON event export directory in a product repo.
+#[must_use]
+pub fn event_export_dir(project_root: &std::path::Path) -> PathBuf {
+    project_root.join(".claude-factory").join("events").join("v1")
+}
+
+/// Path to the `SQLite` operational cache for a project.
+///
+/// Lives outside the repo (XDG state dir) so it is never accidentally committed.
+#[must_use]
+pub fn sqlite_cache_path(project_root: &std::path::Path) -> PathBuf {
+    let state_dir = std::env::var("XDG_STATE_HOME").map_or_else(
+        |_| {
+            std::env::var("HOME").map_or_else(
+                |_| PathBuf::from("/tmp"),
+                PathBuf::from,
+            )
+            .join(".local")
+            .join("state")
+        },
+        PathBuf::from,
+    );
+    let hash = sha256_path(project_root);
+    state_dir
+        .join("claude-factory")
+        .join("projects")
+        .join(hash)
+        .join("events.sqlite3")
+}
+
+fn sha256_path(path: &std::path::Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    format!("{:016x}", h.finish())
+}

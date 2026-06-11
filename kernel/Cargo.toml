@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cfk-core",
+    "crates/cfk-engine",
+    "crates/cfk-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["John Wilger <john@johnwilger.com>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/jwilger/claude-factory"
+
+[workspace.dependencies]
+# Event sourcing
+eventcore = "0.8.0"
+eventcore-sqlite = "0.8.0"
+eventcore-memory = "0.8.0"
+eventcore-macros = "0.8.0"
+
+# MCP server
+rmcp = { version = "1.7.0", features = ["server", "transport-io"] }
+rmcp-macros = "1.7.0"
+schemars = "1"
+
+# Semantic types / newtypes
+nutype = { version = "0.7.0", features = ["serde"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+
+# Template engine for kernel-side prompt templates
+tera = "2.0.0-alpha.7"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "deny"
+pedantic = "deny"
