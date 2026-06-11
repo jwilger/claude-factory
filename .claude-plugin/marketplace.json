@@ -1,0 +1,42 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-factory",
+  "description": "The Claude-Factory dark software factory — deterministic orchestration kernel driving LLM agents through a six-phase product process (discovery, event modeling, architecture, design system, TDD development, review).",
+  "owner": {
+    "name": "John Wilger",
+    "email": "john@johnwilger.com"
+  },
+  "plugins": [
+    {
+      "name": "claude-factory",
+      "description": "The factory conductor plugin. Provides the /claude-factory:work loop, phase commands, methodology skills, and the cfk MCP kernel server.",
+      "author": {
+        "name": "John Wilger",
+        "email": "john@johnwilger.com",
+        "url": "https://johnwilger.com"
+      },
+      "category": "development",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/jwilger/claude-factory.git",
+        "path": "plugins/claude-factory"
+      },
+      "homepage": "https://github.com/jwilger/claude-factory"
+    },
+    {
+      "name": "emc",
+      "description": "Event Model Compiler plugin. Provides the emc MCP server for authoring and formally verifying event models using Lean4 and Quint.",
+      "author": {
+        "name": "John Wilger",
+        "email": "john@johnwilger.com"
+      },
+      "category": "development",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/jwilger/claude-factory.git",
+        "path": "plugins/emc"
+      },
+      "homepage": "https://git.johnwilger.com/Slipstream/emc"
+    }
+  ]
+}

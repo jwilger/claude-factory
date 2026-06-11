@@ -1,0 +1,26 @@
+{
+  "description": "Claude-Factory safety hooks. Thin guardrails only — all orchestration logic lives in the cfk kernel.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Check if a .claude-factory/ directory exists in the current project directory (${CLAUDE_PROJECT_DIR}). If it does, call the cf_status MCP tool and display a brief factory status summary to orient the user. If .claude-factory/ does not exist, say nothing — the user has not initialized a factory project here yet."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Check whether the file being written or edited is inside a 'src/' directory within a product repo that has a .claude-factory/ directory. If so, verify that this session has an active cfk lease (check by calling cf_status and looking for an active lease for this session). If no active lease exists and this appears to be implementation code (not test scaffolding, not documentation, not configuration), block the action and explain that all product source edits must proceed through the factory's TDD workflow (start with /claude-factory:develop). If there is no .claude-factory/ directory in the project, or the edit is clearly not product source code, allow it."
+          }
+        ]
+      }
+    ]
+  }
+}

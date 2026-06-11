@@ -1,0 +1,21 @@
+{
+  "name": "claude-factory",
+  "version": "0.1.0",
+  "description": "Dark software factory conductor. Deterministic cfk kernel drives LLM agents through discovery, event modeling, architecture, design system, TDD development, and review phases.",
+  "author": {
+    "name": "John Wilger",
+    "email": "john@johnwilger.com",
+    "url": "https://johnwilger.com"
+  },
+  "homepage": "https://github.com/jwilger/claude-factory",
+  "repository": "https://github.com/jwilger/claude-factory",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["software-factory", "tdd", "event-modeling", "event-sourcing", "vertical-slices"],
+  "mcpServers": {
+    "claude-factory": {
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap-cfk.sh"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}

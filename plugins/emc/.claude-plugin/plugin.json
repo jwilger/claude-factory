@@ -1,0 +1,19 @@
+{
+  "name": "emc",
+  "version": "0.1.0",
+  "description": "Event Model Compiler MCP server. Author and formally verify event models using Lean4 and Quint. Provides 23 MCP tools for managing workflows, slices, transitions, and governance gates.",
+  "author": {
+    "name": "John Wilger",
+    "email": "john@johnwilger.com"
+  },
+  "homepage": "https://git.johnwilger.com/Slipstream/emc",
+  "repository": "https://git.johnwilger.com/Slipstream/emc",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["event-modeling", "event-sourcing", "lean4", "quint", "formal-verification"],
+  "mcpServers": {
+    "emc": {
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap-emc.sh"]
+    }
+  }
+}

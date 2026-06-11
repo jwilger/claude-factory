@@ -1,1 +1,23 @@
 *.local.*
+
+# Nix
+.direnv/
+result
+result-*
+
+# Rust build artifacts
+target/
+kernel/target/
+
+# cfk bootstrap cache (binary + hash)
+plugins/claude-factory/.bin/
+
+# emc operational state (lives outside repo per emc design — keep this a reminder)
+# $XDG_STATE_HOME/emc/ — not tracked here
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
