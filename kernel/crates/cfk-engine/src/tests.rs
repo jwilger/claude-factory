@@ -3317,3 +3317,205 @@ mod submission_result_normalization {
         assert_eq!(normalized, scalar, "only object-encoding strings are unwrapped");
     }
 }
+
+// ── guardrail (product-source edit gate) ──────────────────────────────────────
+
+#[cfg(test)]
+mod guardrail_check {
+    //! Integration tests for `check_guardrail` over real temp project dirs.
+    //!
+    //! No mocks: each test seeds an on-disk event store and (where relevant) a
+    //! lease, then asserts the verdict for a candidate edit.
+
+    use crate::{
+        events::{FactoryEvent, append_event},
+        guardrail::check_guardrail,
+    };
+    use cfk_core::{
+        guardrail::{AllowReason, BlockReason, GuardrailDecision},
+        types::{
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+        },
+    };
+    use chrono::{Duration, Utc};
+
+    fn session(name: &str) -> SessionIdentity {
+        SessionIdentity::try_new(name.to_string()).expect("valid session identity")
+    }
+
+    /// Seed a `ProjectInitialized` event, which also creates `.claude-factory/`.
+    fn init_factory_project(root: &std::path::Path) {
+        append_event(root, 1, FactoryEvent::ProjectInitialized { id: ProjectId::new() })
+            .expect("append ProjectInitialized");
+    }
+
+    fn grant_lease(root: &std::path::Path, seq: u64, holder: &SessionIdentity, expires_in_secs: Option<i64>) {
+        let now = Utc::now();
+        let lease = Lease {
+            id: LeaseId::new(),
+            work_item_id: WorkItemId::new(),
+            session_identity: holder.clone(),
+            granted_at: now,
+            expires_at: expires_in_secs.map(|s| now + Duration::seconds(s)),
+        };
+        append_event(root, seq, FactoryEvent::LeaseGranted { lease }).expect("append LeaseGranted");
+    }
+
+    #[test]
+    fn allows_when_not_a_factory_project() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(decision, GuardrailDecision::Allow(AllowReason::NotFactoryProject));
+    }
+
+    #[test]
+    fn blocks_protected_source_without_lease() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(
+            decision,
+            GuardrailDecision::Block(BlockReason::NoActiveLeaseForSession)
+        );
+    }
+
+    #[test]
+    fn allows_protected_source_when_session_holds_lease() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+        let holder = session("s1");
+        grant_lease(dir.path(), 2, &holder, None);
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &holder,
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(decision, GuardrailDecision::Allow(AllowReason::LeaseHeld));
+    }
+
+    #[test]
+    fn lease_held_by_another_session_does_not_authorize() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+        grant_lease(dir.path(), 2, &session("other"), None);
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(
+            decision,
+            GuardrailDecision::Block(BlockReason::NoActiveLeaseForSession)
+        );
+    }
+
+    #[test]
+    fn expired_lease_does_not_authorize() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+        let holder = session("s1");
+        grant_lease(dir.path(), 2, &holder, Some(-60)); // expired a minute ago
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &holder,
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(
+            decision,
+            GuardrailDecision::Block(BlockReason::NoActiveLeaseForSession)
+        );
+    }
+
+    #[test]
+    fn allows_unprotected_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("docs/readme.md"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(decision, GuardrailDecision::Allow(AllowReason::PathNotProtected));
+    }
+
+    #[test]
+    fn bypass_sentinel_allows_unleased_protected_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+        std::fs::write(dir.path().join(".claude-factory/LEASE_BYPASS"), "on")
+            .expect("write bypass sentinel");
+
+        let decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("crates/foo/src/lib.rs"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(decision, GuardrailDecision::Allow(AllowReason::BypassActive));
+    }
+
+    #[test]
+    fn honors_custom_protected_globs_from_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_factory_project(dir.path());
+        // A Python-style project: gate the package dir, not src/.
+        std::fs::write(
+            dir.path().join(".claude-factory/guardrail.json"),
+            r#"{"protected_globs": ["myapp/**"]}"#,
+        )
+        .expect("write config");
+
+        // src/ is no longer protected under this config → allowed.
+        let src_decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("src/whatever.rs"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(
+            src_decision,
+            GuardrailDecision::Allow(AllowReason::PathNotProtected)
+        );
+
+        // myapp/ is protected and unleased → blocked.
+        let pkg_decision = check_guardrail(
+            dir.path(),
+            &dir.path().join("myapp/module.py"),
+            &session("s1"),
+            Utc::now(),
+        )
+        .expect("check");
+        assert_eq!(
+            pkg_decision,
+            GuardrailDecision::Block(BlockReason::NoActiveLeaseForSession)
+        );
+    }
+}

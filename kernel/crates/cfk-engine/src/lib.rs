@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config;
 pub mod events;
 pub mod forge;
+pub mod guardrail;
 pub mod loader;
 pub mod project;
 pub mod review;

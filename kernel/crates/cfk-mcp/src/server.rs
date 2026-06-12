@@ -275,6 +275,11 @@ impl ServerState {
 pub struct CfkServer {
     state: Arc<RwLock<ServerState>>,
     forge: Arc<dyn ForgeAdapter>,
+    /// The Claude Code session id this server runs under, if any. Leases are
+    /// keyed to it so they match the session the `PreToolUse` guardrail checks.
+    /// `None` outside Claude Code (manual runs, tests), where the caller-provided
+    /// identity is used instead.
+    session_identity: Option<String>,
     // Used by the `#[tool_handler]` macro; dead-code lint doesn't see the use.
     #[expect(dead_code, reason = "field is read by the #[tool_handler] macro expansion; rustc's dead-code analysis does not see macro-generated references")]
     tool_router: ToolRouter<Self>,
@@ -293,16 +298,34 @@ impl CfkServer {
             Ok(f) => f,
             Err(_) => MemoryForge::new(),
         };
-        Self::load_with_forge(project_root, forge)
+        // Bind leases to the Claude Code session id (what the guardrail checks).
+        let session_identity = std::env::var("CLAUDE_CODE_SESSION_ID")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        Self::load_with_forge_and_session(project_root, forge, session_identity)
     }
 
-    /// Load with an explicit forge adapter (used in tests).
+    /// Load with an explicit forge adapter (used in tests). The session identity
+    /// is `None`, so handlers fall back to the caller-provided identity — keeping
+    /// tests independent of the ambient `CLAUDE_CODE_SESSION_ID`.
     ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
     pub fn load_with_forge(
         project_root: PathBuf,
         forge: Arc<dyn ForgeAdapter>,
+    ) -> anyhow::Result<Self> {
+        Self::load_with_forge_and_session(project_root, forge, None)
+    }
+
+    /// Load with an explicit forge adapter and session identity.
+    ///
+    /// # Errors
+    /// Returns an error if the event log cannot be read.
+    fn load_with_forge_and_session(
+        project_root: PathBuf,
+        forge: Arc<dyn ForgeAdapter>,
+        session_identity: Option<String>,
     ) -> anyhow::Result<Self> {
         let project = load_project_state(&project_root)?;
         let event_sequence: u64 = {
@@ -323,6 +346,7 @@ impl CfkServer {
                 event_sequence,
             ))),
             forge,
+            session_identity,
             tool_router: Self::tool_router(),
         })
     }
@@ -473,8 +497,14 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
 
         let phase_filter = params.phase;
 
-        // Auto-claim ready development items if session_identity is provided.
-        if let Some(ref session_id) = params.session_identity {
+        // Auto-claim ready development items under this session's identity.
+        // Prefer the Claude Code session id (what the guardrail checks) over any
+        // caller-provided string, so the lease matches the editing session.
+        let resolved_session = self
+            .session_identity
+            .clone()
+            .or_else(|| params.session_identity.clone());
+        if let Some(ref session_id) = resolved_session {
             // Find the first ready development item (in phase order).
             let ready_dev: Option<WorkItemId> = proj
                 .work_items
@@ -531,7 +561,13 @@ release it on completion or failure.")]
 
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
-        let lease = handle_claim(proj, &work_item_id, &params.session_identity)
+        // Key the lease to the Claude Code session (what the guardrail checks),
+        // falling back to the caller-provided identity outside Claude Code.
+        let session_id = self
+            .session_identity
+            .clone()
+            .unwrap_or_else(|| params.session_identity.clone());
+        let lease = handle_claim(proj, &work_item_id, &session_id)
             .map_err(|e| command_error(&e))?;
 
         let lease_id_str = lease.id.to_string();

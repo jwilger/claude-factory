@@ -21,3 +21,4 @@ plugins/claude-factory/.bin/
 *.swo
 .idea/
 .vscode/
+.claude-factory/LEASE_BYPASS
