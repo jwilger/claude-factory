@@ -11,12 +11,14 @@ use crate::store::event_export_dir;
 use cfk_core::{
     state_machine::work_item::WorkItem,
     types::{
+        forge::{CommentBody, CommentId, PrNumber, PrUrl},
         gate::{GateKind, GateVerdict},
         ids::{LeaseId, ProjectId, WorkItemId},
         lease::Lease,
         metrics::StepOutcome,
         routing::WorkType,
-        tdd::TddPhase,
+        step::CheckName,
+        tdd::{AuthorIdentity, DrillDownDescription, ErrorMessage, ReviewerId, TestCode, TddPhase},
     },
 };
 use chrono::{DateTime, Utc};
@@ -48,7 +50,7 @@ pub enum FactoryEvent {
     /// A development slice was claimed and its TDD cycle started.
     TddSliceStarted {
         work_item_id: WorkItemId,
-        author_identity: String,
+        author_identity: AuthorIdentity,
     },
     /// The TDD frame advanced to a new phase.
     TddPhaseAdvanced {
@@ -60,27 +62,27 @@ pub enum FactoryEvent {
     TddTestSubmitted {
         work_item_id: WorkItemId,
         frame_depth: u32,
-        test_content: String,
-        author_identity: String,
+        test_content: TestCode,
+        author_identity: AuthorIdentity,
     },
     /// A gate reviewer recorded a verdict.
     TddGateVerdict {
         work_item_id: WorkItemId,
         gate_kind: GateKind,
         verdict: GateVerdict,
-        reviewer_id: String,
+        reviewer_id: ReviewerId,
     },
     /// The kernel ran a check and recorded the result.
     TddCheckResult {
         work_item_id: WorkItemId,
-        check_name: String,
+        check_name: CheckName,
         passed: bool,
-        first_error: Option<String>,
+        first_error: Option<ErrorMessage>,
     },
     /// A drill-down frame was pushed (implementer needs tighter unit test).
     TddDrillDownPushed {
         work_item_id: WorkItemId,
-        child_description: String,
+        child_description: DrillDownDescription,
         child_depth: u32,
     },
     /// The innermost drill-down frame completed; parent resumes.
@@ -92,20 +94,20 @@ pub enum FactoryEvent {
     /// A review slice was started and a PR was opened.
     ReviewSliceStarted {
         work_item_id: WorkItemId,
-        pr_number: u64,
-        pr_url: String,
+        pr_number: PrNumber,
+        pr_url: PrUrl,
     },
     /// A new PR comment was triaged — a `PrCommentTriage` work item was created.
     ReviewCommentTriageCreated {
         review_work_item_id: WorkItemId,
         triage_item_id: WorkItemId,
-        comment_id: String,
-        comment_body: String,
+        comment_id: CommentId,
+        comment_body: CommentBody,
     },
     /// The kernel posted a reply to a PR comment (triage item completed).
     ReviewCommentPosted {
         review_work_item_id: WorkItemId,
-        comment_id: String,
+        comment_id: CommentId,
         triage_item_id: WorkItemId,
     },
     /// All CI checks passed and the PR is approved.

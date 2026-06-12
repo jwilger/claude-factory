@@ -22,7 +22,7 @@ use cfk_core::{
         architecture::{AdrRecord, AdrStatus},
         design::{ComponentName, DesignComponent},
         gate::GateKind,
-        tdd::{AuthorIdentity, DevSliceState, ErrorMessage, TddFrame, TddPhase, TestCode},
+        tdd::{DevSliceState, TddFrame, TddPhase},
     },
 };
 use std::path::Path;
@@ -115,7 +115,7 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
         FactoryEvent::TddSliceStarted { work_item_id, author_identity } => {
             let mut dev = DevSliceState::new(work_item_id.clone());
             if let Some(frame) = dev.current_frame_mut() {
-                frame.author_identity = AuthorIdentity::try_new(author_identity.clone()).ok();
+                frame.author_identity = Some(author_identity.clone());
             }
             state.dev_states.insert(work_item_id.clone(), dev);
         }
@@ -132,8 +132,8 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             if let Some(dev) = state.dev_states.get_mut(work_item_id)
                 && let Some(frame) = dev.frames.iter_mut().find(|f| f.depth == *frame_depth)
             {
-                frame.test_content = TestCode::try_new(test_content.clone()).ok();
-                frame.author_identity = AuthorIdentity::try_new(author_identity.clone()).ok();
+                frame.test_content = Some(test_content.clone());
+                frame.author_identity = Some(author_identity.clone());
                 frame.phase = TddPhase::TestReviewGate;
             }
         }
@@ -159,7 +159,7 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             if let Some(dev) = state.dev_states.get_mut(work_item_id)
                 && let Some(frame) = dev.current_frame_mut()
             {
-                let typed_error = first_error.as_ref().and_then(|s| ErrorMessage::try_new(s.clone()).ok());
+                let typed_error = first_error.clone();
                 match (&frame.phase.clone(), passed) {
                     (TddPhase::RedCheck, false) => {
                         frame.expected_failure.clone_from(&typed_error);
@@ -210,8 +210,8 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
         FactoryEvent::ReviewSliceStarted { work_item_id, pr_number, pr_url } => {
             let mut review = ReviewSliceState::new(work_item_id.clone());
             review.phase = ReviewSlicePhase::PrOpen;
-            review.pr_number = Some(*pr_number);
-            review.pr_url = Some(pr_url.clone());
+            review.pr_number = Some(pr_number.into_inner());
+            review.pr_url = Some(pr_url.to_string());
             state.review_states.insert(work_item_id.clone(), review);
         }
 
@@ -222,8 +222,8 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             comment_body: _,
         } => {
             if let Some(review) = state.review_states.get_mut(review_work_item_id) {
-                review.seen_comment_ids.push(comment_id.clone());
-                review.pending_triage.push((comment_id.clone(), triage_item_id.clone()));
+                review.seen_comment_ids.push(comment_id.to_string());
+                review.pending_triage.push((comment_id.to_string(), triage_item_id.clone()));
                 review.phase = ReviewSlicePhase::CommentTriagePending;
             }
         }
@@ -234,8 +234,9 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             triage_item_id,
         } => {
             if let Some(review) = state.review_states.get_mut(review_work_item_id) {
+                let cid_str = comment_id.to_string();
                 review.pending_triage.retain(|(cid, tid)| {
-                    cid != comment_id || tid != triage_item_id
+                    *cid != cid_str || tid != triage_item_id
                 });
                 if review.pending_triage.is_empty() {
                     review.phase = ReviewSlicePhase::PrOpen;

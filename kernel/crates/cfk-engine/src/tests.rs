@@ -232,8 +232,8 @@ mod tdd_slice {
             ids::{ProjectId, WorkItemId},
             phase::PhaseKind,
             routing::WorkType,
-            step::StepAction,
-            tdd::TddPhase,
+            step::{well_known, StepAction},
+            tdd::{AuthorIdentity, ErrorMessage, ReviewerId, TestCode, TddPhase},
         },
     };
 
@@ -273,7 +273,7 @@ mod tdd_slice {
         *seq += 1;
         let env = append_event(root, *seq, FactoryEvent::TddSliceStarted {
             work_item_id: wid.clone(),
-            author_identity: session.to_string(),
+            author_identity: AuthorIdentity::try_new(session.to_string()).expect("valid"),
         }).expect("append TddSliceStarted");
         apply_event(project, &env.payload);
     }
@@ -334,8 +334,8 @@ mod tdd_slice {
         let env = append_event(root, seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "#[test] fn test_add() { assert_eq!(add(1, 2), 3); }".to_string(),
-            author_identity: "author-session".to_string(),
+            test_content: TestCode::try_new("#[test] fn test_add() { assert_eq!(add(1, 2), 3); }".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("author-session".to_string()).expect("valid"),
         }).expect("append TddTestSubmitted");
         apply_event(&mut project, &env.payload);
 
@@ -361,8 +361,8 @@ mod tdd_slice {
         apply_event(&mut project, &append_event(root, seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "test".to_string(),
-            author_identity: "author-session".to_string(),
+            test_content: TestCode::try_new("test".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("author-session".to_string()).expect("valid"),
         }).expect("TddTestSubmitted").payload);
 
         seq += 1;
@@ -370,7 +370,7 @@ mod tdd_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::TestReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "reviewer-session".to_string(),
+            reviewer_id: ReviewerId::try_new("reviewer-session".to_string()).expect("valid"),
         }).expect("TddGateVerdict").payload);
 
         assert_eq!(
@@ -395,8 +395,8 @@ mod tdd_slice {
         apply_event(&mut project, &append_event(root, seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "test".to_string(),
-            author_identity: "author-session".to_string(),
+            test_content: TestCode::try_new("test".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("author-session".to_string()).expect("valid"),
         }).expect("TddTestSubmitted").payload);
 
         let reason = VetoReason::try_new("Test is implementation-coupled".to_string())
@@ -406,7 +406,7 @@ mod tdd_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::TestReview,
             verdict: GateVerdict::Vetoed { reason },
-            reviewer_id: "reviewer-session".to_string(),
+            reviewer_id: ReviewerId::try_new("reviewer-session".to_string()).expect("valid"),
         }).expect("TddGateVerdict").payload);
 
         assert_eq!(
@@ -433,9 +433,9 @@ mod tdd_slice {
         seq += 1;
         apply_event(&mut project, &append_event(root, seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "tests".to_string(),
+            check_name: well_known::TESTS.clone(),
             passed: false,
-            first_error: Some("error[E0425]: cannot find function `add`".to_string()),
+            first_error: Some(ErrorMessage::try_new("error[E0425]: cannot find function `add`".to_string()).expect("valid")),
         }).expect("TddCheckResult").payload);
 
         assert_eq!(
@@ -491,7 +491,7 @@ mod tdd_slice {
         seq += 1;
         append_event(root, seq, FactoryEvent::TddSliceStarted {
             work_item_id: wid.clone(),
-            author_identity: "s1".to_string(),
+            author_identity: AuthorIdentity::try_new("s1".to_string()).expect("valid"),
         }).expect("TddSliceStarted");
 
         // Advance to TestReviewGate.
@@ -499,8 +499,8 @@ mod tdd_slice {
         append_event(root, seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "the test".to_string(),
-            author_identity: "s1".to_string(),
+            test_content: TestCode::try_new("the test".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("s1".to_string()).expect("valid"),
         }).expect("TddTestSubmitted");
 
         // --- Simulate restart: rebuild state from events ---
@@ -550,8 +550,8 @@ mod m2_full_slice {
             lease::{Lease, SessionIdentity},
             phase::PhaseKind,
             routing::WorkType,
-            step::StepAction,
-            tdd::TddPhase,
+            step::{well_known, StepAction},
+            tdd::{AuthorIdentity, DrillDownDescription, ErrorMessage, ReviewerId, TestCode, TddPhase},
         },
     };
 
@@ -599,7 +599,7 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
         append(root, &mut seq, FactoryEvent::TddSliceStarted {
             work_item_id: wid.clone(),
-            author_identity: "alice".to_string(),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
 
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::WriteTest));
@@ -615,8 +615,8 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "#[test] fn test_multiply() { assert_eq!(multiply(3, 4), 12); }".to_string(),
-            author_identity: "alice".to_string(),
+            test_content: TestCode::try_new("#[test] fn test_multiply() { assert_eq!(multiply(3, 4), 12); }".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::TestReviewGate));
 
@@ -633,7 +633,7 @@ mod m2_full_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::TestReview,
             verdict: GateVerdict::Vetoed { reason },
-            reviewer_id: "bob".to_string(),
+            reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(
             state.dev_states.get(&wid).and_then(|d| d.current_phase()),
@@ -645,8 +645,8 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 0,
-            test_content: "#[test] fn multiplying_returns_product() { assert_eq!(multiply(3, 4), 12); }".to_string(),
-            author_identity: "alice".to_string(),
+            test_content: TestCode::try_new("#[test] fn multiplying_returns_product() { assert_eq!(multiply(3, 4), 12); }".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
 
         // ── Gate approved (bob reviews again) ────────────────────────────────
@@ -654,16 +654,16 @@ mod m2_full_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::TestReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "bob".to_string(),
+            reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::RedCheck));
 
         // ── RedCheck: test fails for the expected reason ─────────────────────
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "tests".to_string(),
+            check_name: well_known::TESTS.clone(),
             passed: false,
-            first_error: Some("error[E0425]: cannot find function `multiply` in this scope".to_string()),
+            first_error: Some(ErrorMessage::try_new("error[E0425]: cannot find function `multiply` in this scope".to_string()).expect("valid")),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Implement));
 
@@ -691,7 +691,7 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::TddDrillDownPushed {
             work_item_id: wid.clone(),
             child_depth: 1,
-            child_description: "Need unit test for multiply_core helper".to_string(),
+            child_description: DrillDownDescription::try_new("Need unit test for multiply_core helper".to_string()).expect("valid"),
         }, &mut state);
 
         assert_eq!(
@@ -710,8 +710,8 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(),
             frame_depth: 1,
-            test_content: "#[test] fn unit_multiply_core() { assert_eq!(multiply_core(3, 4), 12); }".to_string(),
-            author_identity: "alice".to_string(),
+            test_content: TestCode::try_new("#[test] fn unit_multiply_core() { assert_eq!(multiply_core(3, 4), 12); }".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::TestReviewGate));
 
@@ -720,16 +720,16 @@ mod m2_full_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::TestReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "bob".to_string(),
+            reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::RedCheck));
 
         // child: RedCheck fails
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "tests".to_string(),
+            check_name: well_known::TESTS.clone(),
             passed: false,
-            first_error: Some("error[E0425]: cannot find function `multiply_core`".to_string()),
+            first_error: Some(ErrorMessage::try_new("error[E0425]: cannot find function `multiply_core`".to_string()).expect("valid")),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Implement));
 
@@ -741,7 +741,7 @@ mod m2_full_slice {
         }, &mut state);
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "tests".to_string(),
+            check_name: well_known::TESTS.clone(),
             passed: true,
             first_error: None,
         }, &mut state);
@@ -752,14 +752,14 @@ mod m2_full_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::ImplementationReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "bob".to_string(),
+            reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::LintCheck));
 
         // child: lint passes → child Done
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "lint".to_string(),
+            check_name: well_known::LINT.clone(),
             passed: true,
             first_error: None,
         }, &mut state);
@@ -784,7 +784,7 @@ mod m2_full_slice {
         }, &mut state);
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "tests".to_string(),
+            check_name: well_known::TESTS.clone(),
             passed: true,
             first_error: None,
         }, &mut state);
@@ -801,14 +801,14 @@ mod m2_full_slice {
             work_item_id: wid.clone(),
             gate_kind: GateKind::ImplementationReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "bob".to_string(),
+            reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::LintCheck));
 
         // ── Parent: lint passes ───────────────────────────────────────────────
         append(root, &mut seq, FactoryEvent::TddCheckResult {
             work_item_id: wid.clone(),
-            check_name: "lint".to_string(),
+            check_name: well_known::LINT.clone(),
             passed: true,
             first_error: None,
         }, &mut state);
@@ -1274,7 +1274,7 @@ mod review_slice {
         // Post the review comment (triage done).
         append(root, &mut seq, FactoryEvent::ReviewCommentPosted {
             review_work_item_id: wid.clone(),
-            comment_id: "c1".to_string(),
+            comment_id: CommentId::try_new("c1".to_string()).expect("valid"),
             triage_item_id: triage_item_id.clone(),
         }, &mut state);
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: triage_item_id }, &mut state);
@@ -1615,7 +1615,7 @@ mod m4_review_lifecycle {
 
         append(root, &mut seq, FactoryEvent::ReviewCommentPosted {
             review_work_item_id: wid.clone(),
-            comment_id: "planted-1".to_string(),
+            comment_id: CommentId::try_new("planted-1".to_string()).expect("valid"),
             triage_item_id: triage_item_id.clone(),
         }, &mut state);
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: triage_item_id }, &mut state);
@@ -1708,7 +1708,8 @@ mod m3_emc_integration {
             ids::{ProjectId, WorkItemId},
             phase::PhaseKind,
             routing::WorkType,
-            tdd::TddPhase,
+            step::well_known,
+            tdd::{AuthorIdentity, ErrorMessage, ReviewerId, TestCode, TddPhase},
         },
     };
     use std::fs;
@@ -1823,29 +1824,29 @@ mod m3_emc_integration {
             }
         }, &mut state);
         append(root, &mut seq, FactoryEvent::TddSliceStarted {
-            work_item_id: wid.clone(), author_identity: "alice".to_string(),
+            work_item_id: wid.clone(), author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::WriteTest));
 
         // WriteTest → TestReviewGate → RedCheck → Implement → CheckProgress (green) → ImplReviewGate → LintCheck → Done
         append(root, &mut seq, FactoryEvent::TddTestSubmitted {
             work_item_id: wid.clone(), frame_depth: 0,
-            test_content: "assert_eq!(add(2, 2), 4);".to_string(),
-            author_identity: "alice".to_string(),
+            test_content: TestCode::try_new("assert_eq!(add(2, 2), 4);".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::TestReviewGate));
 
         // Gate: approved.
         append(root, &mut seq, FactoryEvent::TddGateVerdict {
             work_item_id: wid.clone(), gate_kind: GateKind::TestReview,
-            verdict: GateVerdict::Approved, reviewer_id: "bob".to_string(),
+            verdict: GateVerdict::Approved, reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::RedCheck));
 
         // Red check: fails (expected).
         append(root, &mut seq, FactoryEvent::TddCheckResult {
-            work_item_id: wid.clone(), check_name: "tests".to_string(),
-            passed: false, first_error: Some("error[E0425]: cannot find function `add`".to_string()),
+            work_item_id: wid.clone(), check_name: well_known::TESTS.clone(),
+            passed: false, first_error: Some(ErrorMessage::try_new("error[E0425]: cannot find function `add`".to_string()).expect("valid")),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Implement));
 
@@ -1856,7 +1857,7 @@ mod m3_emc_integration {
 
         // Green.
         append(root, &mut seq, FactoryEvent::TddCheckResult {
-            work_item_id: wid.clone(), check_name: "tests".to_string(),
+            work_item_id: wid.clone(), check_name: well_known::TESTS.clone(),
             passed: true, first_error: None,
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::ImplReviewGate));
@@ -1864,13 +1865,13 @@ mod m3_emc_integration {
         // Implementation review: approved.
         append(root, &mut seq, FactoryEvent::TddGateVerdict {
             work_item_id: wid.clone(), gate_kind: GateKind::ImplementationReview,
-            verdict: GateVerdict::Approved, reviewer_id: "bob".to_string(),
+            verdict: GateVerdict::Approved, reviewer_id: ReviewerId::try_new("bob".to_string()).expect("valid"),
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::LintCheck));
 
         // Lint passes → Done.
         append(root, &mut seq, FactoryEvent::TddCheckResult {
-            work_item_id: wid.clone(), check_name: "lint".to_string(),
+            work_item_id: wid.clone(), check_name: well_known::LINT.clone(),
             passed: true, first_error: None,
         }, &mut state);
         assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Done));
@@ -2715,7 +2716,7 @@ mod m6_walking_skeleton {
             phase::PhaseKind,
             routing::WorkType,
             step::StepAction,
-            tdd::TddPhase,
+            tdd::{AuthorIdentity, TddPhase},
         },
     };
 
@@ -2765,7 +2766,7 @@ mod m6_walking_skeleton {
         append(root, seq, FactoryEvent::LeaseGranted { lease: make_lease(wid.clone(), "alice") }, state);
         append(root, seq, FactoryEvent::TddSliceStarted {
             work_item_id: wid.clone(),
-            author_identity: "alice".to_string(),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         }, state);
         wid
     }
@@ -3177,7 +3178,7 @@ mod routing_error_surfaces {
             lease::{Lease, SessionIdentity},
             phase::PhaseKind,
             routing::{RoutingTable, WorkType},
-            tdd::TddPhase,
+            tdd::{AuthorIdentity, TddPhase},
         },
     };
     use chrono::Utc;
@@ -3224,7 +3225,7 @@ mod routing_error_surfaces {
             3,
             FactoryEvent::TddSliceStarted {
                 work_item_id: wid.clone(),
-                author_identity: "session-abc".to_string(),
+                author_identity: AuthorIdentity::try_new("session-abc".to_string()).expect("valid"),
             },
         )
         .expect("append");

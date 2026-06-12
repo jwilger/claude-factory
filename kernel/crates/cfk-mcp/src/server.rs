@@ -13,7 +13,9 @@ use cfk_core::{
         metrics::StepOutcome,
         phase::PhaseKind,
         routing::WorkType,
-        tdd::TddPhase,
+        forge::{CommentId, PrNumber, PrUrl},
+        step::CheckName,
+        tdd::{AuthorIdentity, DrillDownDescription, ErrorMessage, ReviewerId, TestCode, TddPhase},
     },
 };
 use cfk_engine::{
@@ -517,10 +519,12 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
                 // Start TDD slice state.
+                let author_identity = AuthorIdentity::try_new(session_id.clone())
+                    .map_err(|_| McpError::invalid_params("Invalid session identity", None))?;
                 guard
                     .emit(FactoryEvent::TddSliceStarted {
                         work_item_id: wid,
-                        author_identity: session_id.clone(),
+                        author_identity,
                     })
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             }
@@ -670,11 +674,15 @@ For other phases: any JSON value is accepted as evidence.")]
                         None,
                     ))?.to_string();
 
+                let test_content_typed = TestCode::try_new(test_content.clone())
+                    .map_err(|_| McpError::invalid_params("test_content cannot be empty", None))?;
+                let author_identity_typed = AuthorIdentity::try_new(author_identity.clone())
+                    .map_err(|_| McpError::internal_error("Invalid author identity".to_string(), None))?;
                 guard.emit(FactoryEvent::TddTestSubmitted {
                     work_item_id,
                     frame_depth,
-                    test_content: test_content.clone(),
-                    author_identity,
+                    test_content: test_content_typed,
+                    author_identity: author_identity_typed,
                 }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
                 content_json(&serde_json::json!({
@@ -689,9 +697,11 @@ For other phases: any JSON value is accepted as evidence.")]
                     .and_then(serde_json::Value::as_str).map(String::from);
 
                 if let Some(desc) = drill_down {
+                    let child_description = DrillDownDescription::try_new(desc.clone())
+                        .map_err(|_| McpError::invalid_params("drill_down_description cannot be empty", None))?;
                     guard.emit(FactoryEvent::TddDrillDownPushed {
                         work_item_id,
-                        child_description: desc.clone(),
+                        child_description,
                         child_depth: frame_depth + 1,
                     }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -749,9 +759,11 @@ For other phases: any JSON value is accepted as evidence.")]
                         .await
                         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
+                    let comment_id_typed = CommentId::try_new(comment_id)
+                        .map_err(|_| McpError::internal_error("Invalid comment id".to_string(), None))?;
                     guard.emit(FactoryEvent::ReviewCommentPosted {
                         review_work_item_id: review_wid,
-                        comment_id,
+                        comment_id: comment_id_typed,
                         triage_item_id: work_item_id.clone(),
                     }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 }
@@ -890,13 +902,15 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
 
         let new_phase_label = tdd_phase_label(&new_phase);
 
+        let reviewer_id = ReviewerId::try_new(params.reviewer_id.clone())
+            .map_err(|_| McpError::invalid_params("reviewer_id cannot be empty", None))?;
         let mut guard = self.state.write().await;
         guard
             .emit(FactoryEvent::TddGateVerdict {
                 work_item_id: work_item_id.clone(),
                 gate_kind,
                 verdict,
-                reviewer_id: params.reviewer_id.clone(),
+                reviewer_id,
             })
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -1088,13 +1102,19 @@ Provide `work_item_id` to advance the TDD state machine based on the result.")]
         if let Some(wid_str) = &params.work_item_id {
             let work_item_id = parse_work_item_id(wid_str)?;
 
+            let check_name = CheckName::try_new(params.check_name.clone())
+                .map_err(|_| McpError::invalid_params("check_name cannot be empty", None))?;
+            let first_error = result.first_error.clone()
+                .map(ErrorMessage::try_new)
+                .transpose()
+                .map_err(|_| McpError::internal_error("Invalid error message".to_string(), None))?;
             let mut guard = self.state.write().await;
             guard
                 .emit(FactoryEvent::TddCheckResult {
                     work_item_id,
-                    check_name: params.check_name.clone(),
+                    check_name,
                     passed: result.passed,
-                    first_error: result.first_error.clone(),
+                    first_error,
                 })
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
@@ -1178,20 +1198,22 @@ target branch (usually `main`).")]
         let opened = self.forge.open_pr(&spec).await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let pr_number = opened.number;
-        let pr_url = opened.url.clone();
+        let pr_number_raw = opened.number;
+        let pr_url_raw = opened.url.clone();
+        let pr_url_typed = PrUrl::try_new(pr_url_raw.clone())
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut guard = self.state.write().await;
         guard.emit(FactoryEvent::ReviewSliceStarted {
             work_item_id,
-            pr_number,
-            pr_url: pr_url.clone(),
+            pr_number: PrNumber::new(pr_number_raw),
+            pr_url: pr_url_typed,
         }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
-            "pr_number": pr_number,
-            "pr_url": pr_url,
+            "pr_number": pr_number_raw,
+            "pr_url": pr_url_raw,
         }))
     }
 
@@ -1222,11 +1244,13 @@ Returns a summary of CI status and any new triage items created.")]
             match event {
                 FactoryEvent::ReviewCommentTriageCreated { triage_item_id, comment_id, comment_body, .. } => {
                     // Create a PrCommentTriage work item in the backlog.
+                    let body_str = comment_body.to_string();
+                    let body_preview = &body_str[..body_str.len().min(120)];
                     let triage_item = cfk_core::state_machine::work_item::WorkItem::new(
                         triage_item_id.clone(),
                         cfk_core::types::phase::PhaseKind::Review,
                         WorkType::PrCommentTriage,
-                        format!("Comment {comment_id}: {}", &comment_body[..comment_body.len().min(120)]),
+                        format!("Comment {comment_id}: {body_preview}"),
                     );
                     triage_ids.push(triage_item_id.to_string());
                     let mut guard = self.state.write().await;

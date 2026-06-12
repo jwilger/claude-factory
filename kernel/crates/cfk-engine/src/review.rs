@@ -11,7 +11,10 @@ use crate::{
 };
 use cfk_core::{
     state_machine::review::ReviewSlicePhase,
-    types::ids::WorkItemId,
+    types::{
+        forge::{PrNumber, PrUrl},
+        ids::WorkItemId,
+    },
 };
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,10 +63,11 @@ pub async fn handle_pr_open(
     let spec = PrSpec { title, body, head, base };
     let opened = forge.open_pr(&spec).await?;
 
+    let pr_url = PrUrl::try_new(opened.url).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(vec![FactoryEvent::ReviewSliceStarted {
         work_item_id: item.id.clone(),
-        pr_number: opened.number,
-        pr_url: opened.url,
+        pr_number: PrNumber::new(opened.number),
+        pr_url,
     }])
 }
 
@@ -101,8 +105,8 @@ pub async fn handle_pr_poll(
             events.push(FactoryEvent::ReviewCommentTriageCreated {
                 review_work_item_id: work_item_id.clone(),
                 triage_item_id,
-                comment_id: comment.id.to_string(),
-                comment_body: comment.body.to_string(),
+                comment_id: comment.id.clone(),
+                comment_body: comment.body.clone(),
             });
         }
     }
