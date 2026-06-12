@@ -3,6 +3,7 @@
 //! Each design-system work item represents a single Atomic Design component
 //! to be built out by the design-system agent.
 
+use crate::types::design::ComponentName;
 use serde::{Deserialize, Serialize};
 
 /// Phases of a design-system work item.
@@ -19,7 +20,7 @@ pub enum DesignPhase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignWorkItemState {
     pub phase: DesignPhase,
-    pub component_name: Option<String>,
+    pub component_name: Option<ComponentName>,
 }
 
 impl DesignWorkItemState {

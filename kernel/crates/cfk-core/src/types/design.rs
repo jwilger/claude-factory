@@ -1,6 +1,7 @@
 //! Design-system phase types — Atomic Design component inventory.
 
 use crate::types::ids::ComponentId;
+use nutype::nutype;
 use serde::{Deserialize, Serialize};
 
 /// Atomic Design level for a design component.
@@ -15,11 +16,19 @@ pub enum AtomicKind {
     Page,
 }
 
+/// Human-readable name for a design-system component.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct ComponentName(String);
+
 /// A design component in the Atomic Design inventory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignComponent {
     pub id: ComponentId,
-    pub name: String,
+    pub name: ComponentName,
     pub kind: AtomicKind,
     /// Optional reference to the emc slice this component satisfies.
     pub slice_ref: Option<String>,

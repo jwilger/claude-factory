@@ -291,8 +291,8 @@ impl ForgeAdapter for GiteaForge {
         let comments = comments_resp.as_array().map_or(Vec::new(), |arr| {
             arr.iter().filter_map(|c| {
                 Some(PrComment {
-                    id: c["id"].as_u64()?.to_string(),
-                    body: c["body"].as_str()?.to_string(),
+                    id: cfk_core::types::forge::CommentId::try_new(c["id"].as_u64()?.to_string()).ok()?,
+                    body: cfk_core::types::forge::CommentBody::try_new(c["body"].as_str()?.to_string()).ok()?,
                     author: c["user"]["login"].as_str()?.to_string(),
                 })
             }).collect()

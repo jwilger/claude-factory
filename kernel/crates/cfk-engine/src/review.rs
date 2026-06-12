@@ -96,13 +96,13 @@ pub async fn handle_pr_poll(
 
     // Detect new comments not yet seen.
     for comment in &poll.comments {
-        if !review.seen_comment_ids.contains(&comment.id) {
+        if !review.seen_comment_ids.contains(&comment.id.to_string()) {
             let triage_item_id = cfk_core::types::ids::WorkItemId::new();
             events.push(FactoryEvent::ReviewCommentTriageCreated {
                 review_work_item_id: work_item_id.clone(),
                 triage_item_id,
-                comment_id: comment.id.clone(),
-                comment_body: comment.body.clone(),
+                comment_id: comment.id.to_string(),
+                comment_body: comment.body.to_string(),
             });
         }
     }

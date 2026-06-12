@@ -445,7 +445,7 @@ mod tdd_slice {
         assert!(
             project.dev_states.get(&wid)
                 .and_then(|d| d.current_frame())
-                .and_then(|f| f.current_error.as_deref())
+                .and_then(|f| f.current_error.as_ref())
                 .is_some()
         );
     }
@@ -1041,7 +1041,7 @@ mod review_slice {
             work_item::{WorkItem, WorkItemStatus},
         },
         types::{
-            forge::{CiStatus, PrComment, PrPollResult},
+            forge::{CiStatus, CommentBody, CommentId, PrComment, PrPollResult},
             ids::{LeaseId, ProjectId, WorkItemId},
             lease::{Lease, SessionIdentity},
             phase::PhaseKind,
@@ -1193,8 +1193,8 @@ mod review_slice {
                 ci_status: CiStatus::Pending,
                 approved: false,
                 comments: vec![PrComment {
-                    id: "c1".to_string(),
-                    body: "Please add a doc comment.".to_string(),
+                    id: CommentId::try_new("c1".to_string()).expect("valid comment id"),
+                    body: CommentBody::try_new("Please add a doc comment.".to_string()).expect("valid body"),
                     author: "reviewer".to_string(),
                 }],
             },
@@ -1245,8 +1245,8 @@ mod review_slice {
                 ci_status: CiStatus::Pending,
                 approved: false,
                 comments: vec![PrComment {
-                    id: "c1".to_string(),
-                    body: "LGTM but rename the variable.".to_string(),
+                    id: CommentId::try_new("c1".to_string()).expect("valid comment id"),
+                    body: CommentBody::try_new("LGTM but rename the variable.".to_string()).expect("valid body"),
                     author: "alice".to_string(),
                 }],
             },
@@ -1455,7 +1455,7 @@ mod m4_review_lifecycle {
             work_item::{WorkItem, WorkItemStatus},
         },
         types::{
-            forge::{CiStatus, PrComment, PrPollResult},
+            forge::{CiStatus, CommentBody, CommentId, PrComment, PrPollResult},
             ids::{LeaseId, ProjectId, WorkItemId},
             lease::{Lease, SessionIdentity},
             phase::PhaseKind,
@@ -1528,8 +1528,8 @@ mod m4_review_lifecycle {
                 ci_status: CiStatus::Pending,
                 approved: false,
                 comments: vec![PrComment {
-                    id: "planted-1".to_string(),
-                    body: "Please add inline docs to the public function.".to_string(),
+                    id: CommentId::try_new("planted-1".to_string()).expect("valid comment id"),
+                    body: CommentBody::try_new("Please add inline docs to the public function.".to_string()).expect("valid body"),
                     author: "human-reviewer".to_string(),
                 }],
             },
@@ -1537,8 +1537,8 @@ mod m4_review_lifecycle {
                 ci_status: CiStatus::Passing,
                 approved: true,
                 comments: vec![PrComment {
-                    id: "planted-1".to_string(),
-                    body: "Please add inline docs to the public function.".to_string(),
+                    id: CommentId::try_new("planted-1".to_string()).expect("valid comment id"),
+                    body: CommentBody::try_new("Please add inline docs to the public function.".to_string()).expect("valid body"),
                     author: "human-reviewer".to_string(),
                 }],
             },
@@ -2308,7 +2308,7 @@ mod design_system_phase {
             work_item::{WorkItem, WorkItemStatus},
         },
         types::{
-            design::AtomicKind,
+            design::{AtomicKind, ComponentName},
             ids::{ComponentId, ProjectId, WorkItemId},
             phase::PhaseKind,
             routing::WorkType,
@@ -2410,7 +2410,10 @@ mod design_system_phase {
             Some(&DesignPhase::Done),
         );
         assert_eq!(state.design_inventory.len(), 1);
-        assert_eq!(state.design_inventory[0].name, "ReceiveStockPage");
+        assert_eq!(
+            state.design_inventory[0].name,
+            ComponentName::try_new("ReceiveStockPage".to_string()).expect("valid name"),
+        );
         assert_eq!(state.design_inventory[0].kind, AtomicKind::Page);
         assert_eq!(
             state.work_items.iter().find(|i| i.id == wid).map(|i| &i.status),
@@ -2420,7 +2423,10 @@ mod design_system_phase {
         // Restart durability.
         let replayed = load_project_state(root).unwrap().unwrap();
         assert_eq!(replayed.design_inventory.len(), 1, "component inventory survives restart");
-        assert_eq!(replayed.design_inventory[0].name, "ReceiveStockPage");
+        assert_eq!(
+            replayed.design_inventory[0].name,
+            ComponentName::try_new("ReceiveStockPage".to_string()).expect("valid name"),
+        );
     }
 
     #[test]
@@ -2484,7 +2490,7 @@ mod m5_exit_criterion {
         state_machine::work_item::{WorkItem, WorkItemStatus},
         types::{
             architecture::AdrStatus,
-            design::AtomicKind,
+            design::{AtomicKind, ComponentName},
             ids::{AdrId, ComponentId, ProjectId, WorkItemId},
             phase::PhaseKind,
             routing::WorkType,
@@ -2667,12 +2673,18 @@ mod m5_exit_criterion {
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: ds_wid.clone() }, &mut state);
 
         assert_eq!(state.design_inventory.len(), 1);
-        assert_eq!(state.design_inventory[0].name, "WidgetListPage");
+        assert_eq!(
+            state.design_inventory[0].name,
+            ComponentName::try_new("WidgetListPage".to_string()).expect("valid name"),
+        );
 
         // Restart durability for design system.
         let replayed = load_project_state(root).unwrap().unwrap();
         assert_eq!(replayed.design_inventory.len(), 1, "design inventory survives restart");
-        assert_eq!(replayed.design_inventory[0].name, "WidgetListPage");
+        assert_eq!(
+            replayed.design_inventory[0].name,
+            ComponentName::try_new("WidgetListPage".to_string()).expect("valid name"),
+        );
         assert_eq!(
             replayed.work_items.iter().filter(|i| i.status == WorkItemStatus::Done).count(),
             3, // discovery + architecture + design = 3 done items

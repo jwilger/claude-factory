@@ -1505,7 +1505,7 @@ Returns the IDs of any new work items created.")]
             let guard = self.state.read().await;
             let proj = guard.project.as_ref()
                 .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
-            proj.design_inventory.iter().map(|c| c.name.clone()).collect()
+            proj.design_inventory.iter().map(|c| c.name.to_string()).collect()
         };
 
         let mut new_item_ids: Vec<String> = Vec::new();

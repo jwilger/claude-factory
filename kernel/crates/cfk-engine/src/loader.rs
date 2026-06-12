@@ -20,9 +20,9 @@ use cfk_core::{
     },
     types::{
         architecture::{AdrRecord, AdrStatus},
-        design::DesignComponent,
+        design::{ComponentName, DesignComponent},
         gate::GateKind,
-        tdd::{DevSliceState, TddFrame, TddPhase},
+        tdd::{AuthorIdentity, DevSliceState, ErrorMessage, TddFrame, TddPhase, TestCode},
     },
 };
 use std::path::Path;
@@ -115,7 +115,7 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
         FactoryEvent::TddSliceStarted { work_item_id, author_identity } => {
             let mut dev = DevSliceState::new(work_item_id.clone());
             if let Some(frame) = dev.current_frame_mut() {
-                frame.author_identity = Some(author_identity.clone());
+                frame.author_identity = AuthorIdentity::try_new(author_identity.clone()).ok();
             }
             state.dev_states.insert(work_item_id.clone(), dev);
         }
@@ -132,8 +132,8 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             if let Some(dev) = state.dev_states.get_mut(work_item_id)
                 && let Some(frame) = dev.frames.iter_mut().find(|f| f.depth == *frame_depth)
             {
-                test_content.clone_into(frame.test_content.insert(String::new()));
-                frame.author_identity = Some(author_identity.clone());
+                frame.test_content = TestCode::try_new(test_content.clone()).ok();
+                frame.author_identity = AuthorIdentity::try_new(author_identity.clone()).ok();
                 frame.phase = TddPhase::TestReviewGate;
             }
         }
@@ -159,17 +159,18 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             if let Some(dev) = state.dev_states.get_mut(work_item_id)
                 && let Some(frame) = dev.current_frame_mut()
             {
+                let typed_error = first_error.as_ref().and_then(|s| ErrorMessage::try_new(s.clone()).ok());
                 match (&frame.phase.clone(), passed) {
                     (TddPhase::RedCheck, false) => {
-                        frame.expected_failure.clone_from(first_error);
-                        frame.current_error.clone_from(first_error);
+                        frame.expected_failure.clone_from(&typed_error);
+                        frame.current_error = typed_error;
                         frame.phase = TddPhase::Implement;
                     }
                     (TddPhase::CheckProgress | TddPhase::Implement, true) => {
                         frame.phase = TddPhase::ImplReviewGate;
                     }
                     (TddPhase::CheckProgress | TddPhase::Implement | TddPhase::LintCheck, false) => {
-                        frame.current_error.clone_from(first_error);
+                        frame.current_error = typed_error;
                         frame.phase = TddPhase::Implement;
                     }
                     (TddPhase::LintCheck, true) => {
@@ -319,13 +320,15 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
                 .entry(work_item_id.clone())
                 .or_default();
             ds.phase = DesignPhase::Done;
-            ds.component_name = Some(name.clone());
-            state.design_inventory.push(DesignComponent {
-                id: component_id.clone(),
-                name: name.clone(),
-                kind: *kind,
-                slice_ref: slice_ref.clone(),
-            });
+            ds.component_name = ComponentName::try_new(name.clone()).ok();
+            if let Ok(component_name) = ComponentName::try_new(name.clone()) {
+                state.design_inventory.push(DesignComponent {
+                    id: component_id.clone(),
+                    name: component_name,
+                    kind: *kind,
+                    slice_ref: slice_ref.clone(),
+                });
+            }
         }
 
     }

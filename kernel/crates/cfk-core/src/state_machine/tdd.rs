@@ -6,7 +6,10 @@
 
 use crate::types::{
     gate::{GateKind, GateVerdict},
-    tdd::{DevSliceState, TddFrame, TddPhase},
+    tdd::{
+        AuthorIdentity, DevSliceState, DrillDownDescription, ErrorMessage, ReviewerId, TddFrame,
+        TddPhase, TestCode,
+    },
 };
 use thiserror::Error;
 
@@ -14,17 +17,17 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub enum TddInput {
     /// Test-writer agent submitted test code.
-    TestSubmitted { content: String, author_identity: String },
+    TestSubmitted { content: TestCode, author_identity: AuthorIdentity },
     /// A gate reviewer recorded a verdict.
-    GateVerdicted { kind: GateKind, verdict: GateVerdict, reviewer_id: String },
+    GateVerdicted { kind: GateKind, verdict: GateVerdict, reviewer_id: ReviewerId },
     /// The kernel ran the test suite and has a result.
-    CheckResult { passed: bool, first_error: Option<String> },
+    CheckResult { passed: bool, first_error: Option<ErrorMessage> },
     /// After impl submission: kernel ran check and compared failure progression.
     ProgressCheckResult {
         passed: bool,
-        first_error: Option<String>,
+        first_error: Option<ErrorMessage>,
         /// Implementer signalled this error requires a drill-down unit test.
-        drill_down_description: Option<String>,
+        drill_down_description: Option<DrillDownDescription>,
     },
     /// The innermost drill-down frame just went green; pop it and resume.
     DrillDownComplete,
@@ -46,11 +49,11 @@ impl TddInput {
 #[derive(Debug, Clone)]
 pub enum TddEffect {
     PhaseChanged { new_phase: TddPhase },
-    TestRecorded { content: String, author: String },
-    GateVerdictRecorded { kind: GateKind, verdict: GateVerdict, reviewer: String },
-    FailureConfirmed { first_error: Option<String> },
-    CheckProgressRecorded { passed: bool, first_error: Option<String> },
-    DrillDownPushed { description: String, depth: u32 },
+    TestRecorded { content: TestCode, author: AuthorIdentity },
+    GateVerdictRecorded { kind: GateKind, verdict: GateVerdict, reviewer: ReviewerId },
+    FailureConfirmed { first_error: Option<ErrorMessage> },
+    CheckProgressRecorded { passed: bool, first_error: Option<ErrorMessage> },
+    DrillDownPushed { description: DrillDownDescription, depth: u32 },
     DrillDownPopped,
     SliceDone,
 }
@@ -103,7 +106,7 @@ pub fn transition(
 
         // ── TestReviewGate ────────────────────────────────────────────────
         (TddPhase::TestReviewGate, TddInput::GateVerdicted { kind: GateKind::TestReview, verdict, reviewer_id }) => {
-            enforce_reviewer_ne_author(author.as_deref(), &reviewer_id)?;
+            enforce_reviewer_ne_author(author.as_ref(), &reviewer_id)?;
             let new_phase = if verdict.is_approved() {
                 TddPhase::RedCheck
             } else {
@@ -118,8 +121,8 @@ pub fn transition(
         // ── RedCheck ──────────────────────────────────────────────────────
         (TddPhase::RedCheck, TddInput::CheckResult { passed: false, first_error }) => {
             let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
-            frame.expected_failure = first_error.clone();
-            frame.current_error = first_error.clone();
+            frame.expected_failure.clone_from(&first_error);
+            frame.current_error.clone_from(&first_error);
             frame.phase = TddPhase::Implement;
             effects.push(TddEffect::FailureConfirmed { first_error });
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::Implement });
@@ -164,7 +167,7 @@ pub fn transition(
             drill_down_description: None,
         }) => {
             let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
-            frame.current_error = first_error.clone();
+            frame.current_error.clone_from(&first_error);
             frame.phase = TddPhase::Implement;
             effects.push(TddEffect::CheckProgressRecorded { passed: false, first_error });
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::Implement });
@@ -186,7 +189,7 @@ pub fn transition(
 
         // ── ImplReviewGate ────────────────────────────────────────────────
         (TddPhase::ImplReviewGate, TddInput::GateVerdicted { kind: GateKind::ImplementationReview, verdict, reviewer_id }) => {
-            enforce_reviewer_ne_author(author.as_deref(), &reviewer_id)?;
+            enforce_reviewer_ne_author(author.as_ref(), &reviewer_id)?;
             let new_phase = if verdict.is_approved() {
                 TddPhase::LintCheck
             } else {
@@ -224,10 +227,14 @@ pub fn transition(
     Ok(effects)
 }
 
-fn enforce_reviewer_ne_author(author: Option<&str>, reviewer: &str) -> Result<(), TddError> {
-    if let Some(auth) = author.filter(|a| *a == reviewer) {
+fn enforce_reviewer_ne_author(
+    author: Option<&AuthorIdentity>,
+    reviewer: &ReviewerId,
+) -> Result<(), TddError> {
+    let reviewer_s = reviewer.to_string();
+    if let Some(auth) = author.filter(|a| a.to_string() == reviewer_s) {
         return Err(TddError::ReviewerIsAuthor {
-            reviewer: reviewer.to_string(),
+            reviewer: reviewer_s,
             author: auth.to_string(),
         });
     }
@@ -242,7 +249,7 @@ mod tests {
     use crate::types::{
         gate::{GateKind, GateVerdict, VetoReason},
         ids::WorkItemId,
-        tdd::DevSliceState,
+        tdd::{AuthorIdentity, DevSliceState, DrillDownDescription, ErrorMessage, ReviewerId, TestCode},
     };
 
     fn fresh_state() -> DevSliceState {
@@ -251,8 +258,10 @@ mod tests {
 
     fn submit_test(state: &mut DevSliceState) {
         let input = TddInput::TestSubmitted {
-            content: "#[test] fn foo() {}".to_string(),
-            author_identity: "author-session".to_string(),
+            content: TestCode::try_new("#[test] fn foo() {}".to_string())
+                .expect("valid test code"),
+            author_identity: AuthorIdentity::try_new("author-session".to_string())
+                .expect("valid identity"),
         };
         transition(state, input).expect("TestSubmitted");
     }
@@ -261,7 +270,8 @@ mod tests {
         let input = TddInput::GateVerdicted {
             kind: GateKind::TestReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "reviewer-session".to_string(),
+            reviewer_id: ReviewerId::try_new("reviewer-session".to_string())
+                .expect("valid reviewer"),
         };
         transition(state, input).expect("approve test gate");
     }
@@ -269,7 +279,10 @@ mod tests {
     fn confirm_red(state: &mut DevSliceState) {
         let input = TddInput::CheckResult {
             passed: false,
-            first_error: Some("error[E0308]: mismatched types".to_string()),
+            first_error: Some(
+                ErrorMessage::try_new("error[E0308]: mismatched types".to_string())
+                    .expect("valid error"),
+            ),
         };
         transition(state, input).expect("RedCheck");
     }
@@ -300,7 +313,8 @@ mod tests {
         let input = TddInput::GateVerdicted {
             kind: GateKind::TestReview,
             verdict: GateVerdict::Vetoed { reason },
-            reviewer_id: "reviewer-session".to_string(),
+            reviewer_id: ReviewerId::try_new("reviewer-session".to_string())
+                .expect("valid reviewer"),
         };
         transition(&mut state, input).expect("veto gate");
         assert_eq!(state.current_phase(), Some(&TddPhase::WriteTest));
@@ -334,15 +348,16 @@ mod tests {
     fn reviewer_same_as_author_is_rejected() {
         let mut state = fresh_state();
         let input = TddInput::TestSubmitted {
-            content: "test code".to_string(),
-            author_identity: "same-session".to_string(),
+            content: TestCode::try_new("test code".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("same-session".to_string())
+                .expect("valid identity"),
         };
         transition(&mut state, input).expect("submit test");
 
         let input = TddInput::GateVerdicted {
             kind: GateKind::TestReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "same-session".to_string(),
+            reviewer_id: ReviewerId::try_new("same-session".to_string()).expect("valid reviewer"),
         };
         let err = transition(&mut state, input).expect_err("same identity should be rejected");
         assert!(matches!(err, TddError::ReviewerIsAuthor { .. }));
@@ -369,7 +384,10 @@ mod tests {
 
         let input = TddInput::CheckResult {
             passed: false,
-            first_error: Some("error: new different error".to_string()),
+            first_error: Some(
+                ErrorMessage::try_new("error: new different error".to_string())
+                    .expect("valid error"),
+            ),
         };
         transition(&mut state, input).expect("failing progress check");
         assert_eq!(state.current_phase(), Some(&TddPhase::Implement));
@@ -386,8 +404,13 @@ mod tests {
 
         let input = TddInput::ProgressCheckResult {
             passed: false,
-            first_error: Some("some error".to_string()),
-            drill_down_description: Some("unit test for parse_foo".to_string()),
+            first_error: Some(
+                ErrorMessage::try_new("some error".to_string()).expect("valid error"),
+            ),
+            drill_down_description: Some(
+                DrillDownDescription::try_new("unit test for parse_foo".to_string())
+                    .expect("valid description"),
+            ),
         };
         transition(&mut state, input).expect("drill-down");
         assert_eq!(state.frames.len(), 2, "should have parent + child frame");
@@ -409,7 +432,7 @@ mod tests {
         let input = TddInput::GateVerdicted {
             kind: GateKind::ImplementationReview,
             verdict: GateVerdict::Approved,
-            reviewer_id: "impl-reviewer".to_string(),
+            reviewer_id: ReviewerId::try_new("impl-reviewer".to_string()).expect("valid reviewer"),
         };
         transition(&mut state, input).expect("approve impl review");
         assert_eq!(state.current_phase(), Some(&TddPhase::LintCheck));
@@ -428,7 +451,7 @@ mod tests {
         let input = TddInput::GateVerdicted {
             kind: GateKind::ImplementationReview,
             verdict: GateVerdict::Vetoed { reason },
-            reviewer_id: "impl-reviewer".to_string(),
+            reviewer_id: ReviewerId::try_new("impl-reviewer".to_string()).expect("valid reviewer"),
         };
         transition(&mut state, input).expect("veto impl review");
         assert_eq!(state.current_phase(), Some(&TddPhase::Implement));
@@ -457,7 +480,9 @@ mod tests {
 
         let input = TddInput::CheckResult {
             passed: false,
-            first_error: Some("warning: unused import".to_string()),
+            first_error: Some(
+                ErrorMessage::try_new("warning: unused import".to_string()).expect("valid error"),
+            ),
         };
         transition(&mut state, input).expect("lint fail");
         assert_eq!(state.current_phase(), Some(&TddPhase::Implement));
@@ -468,8 +493,8 @@ mod tests {
         let work_item_id = WorkItemId::new();
         let mut state = DevSliceState { frames: vec![], work_item_id };
         let input = TddInput::TestSubmitted {
-            content: "test".to_string(),
-            author_identity: "alice".to_string(),
+            content: TestCode::try_new("test".to_string()).expect("valid"),
+            author_identity: AuthorIdentity::try_new("alice".to_string()).expect("valid"),
         };
         let err = transition(&mut state, input).expect_err("no frame should fail");
         assert!(matches!(err, TddError::NoFrame));
@@ -493,7 +518,7 @@ mod tests {
         assert!(failure.is_some(), "should have a FailureConfirmed effect");
         assert!(
             failure.unwrap().is_none(),
-            "first_error should be None when check produced no message"
+            "first_error should be None when no error message is provided"
         );
     }
 }

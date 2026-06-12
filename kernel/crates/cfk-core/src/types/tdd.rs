@@ -2,7 +2,49 @@
 //! red-green-refactor cycle including drill-down frame stacks.
 
 use crate::types::ids::WorkItemId;
+use nutype::nutype;
 use serde::{Deserialize, Serialize};
+
+/// Test code submitted by the test-writer agent.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct TestCode(String);
+
+/// A compiler or test error message the implementer must address.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct ErrorMessage(String);
+
+/// Session identity of whoever claimed a work item (the "author").
+/// Gate reviewers must have a different identity.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct AuthorIdentity(String);
+
+/// Session identity of a gate reviewer.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct ReviewerId(String);
+
+/// A description of the tighter unit test needed for a drill-down.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+)]
+pub struct DrillDownDescription(String);
 
 /// The current phase of one TDD frame (one level of the drill-down stack).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,14 +80,14 @@ pub struct TddFrame {
     pub depth: u32,
     pub phase: TddPhase,
     /// The test code submitted by the test-writer (set after `WriteTest`).
-    pub test_content: Option<String>,
+    pub test_content: Option<TestCode>,
     /// The reason the kernel confirmed the test fails (set after `RedCheck`).
-    pub expected_failure: Option<String>,
+    pub expected_failure: Option<ErrorMessage>,
     /// The first compiler/test error the implementer must address next.
-    pub current_error: Option<String>,
+    pub current_error: Option<ErrorMessage>,
     /// Session identity of whoever claimed this work item (the "author").
     /// Gate reviewers must have a different identity.
-    pub author_identity: Option<String>,
+    pub author_identity: Option<AuthorIdentity>,
 }
 
 impl TddFrame {

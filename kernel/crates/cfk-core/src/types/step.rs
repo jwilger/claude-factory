@@ -86,3 +86,37 @@ pub struct ReadyStep {
     pub phase: PhaseKind,
     pub action: StepAction,
 }
+
+/// Well-known `CheckName` constants for the built-in test and lint checks.
+///
+/// Using these constants instead of `CheckName::try_new("tests")` avoids scattered
+/// `expect` calls for literals that are statically valid.
+pub mod well_known {
+    use super::CheckName;
+    use std::sync::LazyLock;
+
+    fn known(s: &'static str) -> CheckName {
+        #[expect(
+            clippy::expect_used,
+            reason = "called only with non-empty &'static str literals; a unit test below proves every literal validates, making this path unreachable in practice"
+        )]
+        CheckName::try_new(s.to_string()).expect("static check name is non-empty")
+    }
+
+    /// The standard test-suite check (`cargo nextest run` by default).
+    pub static TESTS: LazyLock<CheckName> = LazyLock::new(|| known("tests"));
+
+    /// The standard linter check (`cargo clippy -- -D warnings` by default).
+    pub static LINT: LazyLock<CheckName> = LazyLock::new(|| known("lint"));
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn well_known_check_names_are_valid() {
+            let _ = &*TESTS;
+            let _ = &*LINT;
+        }
+    }
+}

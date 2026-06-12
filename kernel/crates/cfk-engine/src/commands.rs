@@ -86,7 +86,8 @@ fn tdd_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep
             StepAction::SpawnAgent { executor: exec, prompt, output_schema: None }
         }
         TddPhase::TestReviewGate => {
-            let test_content = frame.test_content.as_deref().unwrap_or("(no test content)");
+            let test_content = frame.test_content.as_ref()
+                .map_or_else(|| "(no test content)".to_string(), ToString::to_string);
             let prompt = build_prompt(&format!(
                 "Review this test for the slice: {}\n\nTest code:\n```\n{test_content}\n```\n\n\
                  Checklist:\n\
@@ -106,12 +107,11 @@ fn tdd_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep
             }
         }
         TddPhase::RedCheck | TddPhase::CheckProgress => {
-            let check = cfk_core::types::step::CheckName::try_new("tests".to_string())
-                .expect("static literal is non-empty");
-            StepAction::RunCheck { check_name: check }
+            StepAction::RunCheck { check_name: cfk_core::types::step::well_known::TESTS.clone() }
         }
         TddPhase::Implement => {
-            let first_error = frame.current_error.as_deref().unwrap_or("(unknown error)");
+            let first_error = frame.current_error.as_ref()
+                .map_or_else(|| "(unknown error)".to_string(), ToString::to_string);
             let prompt = build_prompt(&format!(
                 "Implement the narrowest change to address ONLY this error:\n\n\
                  ```\n{first_error}\n```\n\n\
@@ -146,9 +146,7 @@ fn tdd_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep
             }
         }
         TddPhase::LintCheck => {
-            let check = cfk_core::types::step::CheckName::try_new("lint".to_string())
-                .expect("static literal is non-empty");
-            StepAction::RunCheck { check_name: check }
+            StepAction::RunCheck { check_name: cfk_core::types::step::well_known::LINT.clone() }
         }
         TddPhase::Done => return None, // handled as work item completion by the caller
     };
@@ -347,7 +345,7 @@ fn design_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyS
             let inventory_names: Vec<_> = state
                 .design_inventory
                 .iter()
-                .map(|c| format!("- {} ({:?})", c.name, c.kind))
+                .map(|c| format!("- {} ({:?})", &c.name, c.kind))
                 .collect();
             let inventory_summary = if inventory_names.is_empty() {
                 "None yet.".to_string()
