@@ -16,11 +16,7 @@
         "url": "https://johnwilger.com"
       },
       "category": "development",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/jwilger/claude-factory.git",
-        "path": "plugins/claude-factory"
-      },
+      "source": "./plugins/claude-factory",
       "homepage": "https://github.com/jwilger/claude-factory"
     },
     {
@@ -31,11 +27,7 @@
         "email": "john@johnwilger.com"
       },
       "category": "development",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/jwilger/claude-factory.git",
-        "path": "plugins/emc"
-      },
+      "source": "./plugins/emc",
       "homepage": "https://git.johnwilger.com/Slipstream/emc"
     }
   ]

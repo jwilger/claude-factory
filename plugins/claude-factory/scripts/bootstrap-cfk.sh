@@ -35,7 +35,8 @@ fi
 
 (cd "${KERNEL_ROOT}" && cargo build --release --bin cfk 2>&2)
 
-cp "${KERNEL_ROOT}/target/release/cfk" "${CFW_BIN}"
+CARGO_TARGET_DIR=$(cd "${KERNEL_ROOT}" && cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['target_directory'])" 2>/dev/null || echo "${KERNEL_ROOT}/target")
+cp "${CARGO_TARGET_DIR}/release/cfk" "${CFW_BIN}"
 chmod +x "${CFW_BIN}"
 
 if [[ -n "${CURRENT_HASH}" ]]; then

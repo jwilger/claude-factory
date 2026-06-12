@@ -17,7 +17,6 @@
       "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap-cfk.sh"]
     }
   },
-  "hooks": "./hooks/hooks.json",
   "statusLine": {
     "type": "command",
     "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/factory-statusline.sh"
