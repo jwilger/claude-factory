@@ -8,8 +8,25 @@ use async_trait::async_trait;
 use cfk_core::types::forge::{CiStatus, PrComment, PrPollResult};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
+use thiserror::Error;
+
+/// Error type for forge adapter operations.
+#[derive(Debug, Error)]
+pub enum ForgeError {
+    /// An HTTP-level error from the forge API.
+    #[error("forge HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// The forge response was missing a required field.
+    #[error("malformed forge response: missing field `{field}`")]
+    MalformedResponse { field: &'static str },
+
+    /// A `PollScript` ran out of scripted results before polling stopped.
+    #[error("poll script exhausted after {calls} calls; add more results to the script")]
+    PollScriptExhausted { calls: usize },
+}
 
 /// Specification for opening a new pull request.
 pub struct PrSpec {
@@ -26,15 +43,12 @@ pub struct OpenedPr {
 }
 
 /// Trait abstracting a code-hosting forge (Gitea, GitHub, …).
-///
-/// All methods are async and return `anyhow::Result` so the imperative shell
-/// can map forge errors into kernel errors without coupling to HTTP internals.
 #[async_trait]
 pub trait ForgeAdapter: Send + Sync {
-    async fn open_pr(&self, spec: &PrSpec) -> anyhow::Result<OpenedPr>;
-    async fn poll_pr(&self, number: u64) -> anyhow::Result<PrPollResult>;
-    async fn post_comment(&self, number: u64, body: &str) -> anyhow::Result<String>;
-    async fn merge_pr(&self, number: u64) -> anyhow::Result<()>;
+    async fn open_pr(&self, spec: &PrSpec) -> Result<OpenedPr, ForgeError>;
+    async fn poll_pr(&self, number: u64) -> Result<PrPollResult, ForgeError>;
+    async fn post_comment(&self, number: u64, body: &str) -> Result<String, ForgeError>;
+    async fn merge_pr(&self, number: u64) -> Result<(), ForgeError>;
 }
 
 // ── MemoryForge (in-memory test substitute) ─────────────────────────────────
@@ -52,18 +66,19 @@ impl PollScript {
         Self { results, index: 0 }
     }
 
-    /// Advance to the next scripted result (repeats last entry when exhausted).
-    pub fn advance(&mut self) -> PrPollResult {
+    /// Return the next scripted result, or `Err(PollScriptExhausted)` if the
+    /// script has no more entries.
+    ///
+    /// # Errors
+    /// Returns `ForgeError::PollScriptExhausted` when called more times than
+    /// there are scripted results.
+    pub fn advance(&mut self) -> Result<PrPollResult, ForgeError> {
         if self.index < self.results.len() {
             let r = self.results[self.index].clone();
             self.index += 1;
-            r
+            Ok(r)
         } else {
-            self.results.last().cloned().unwrap_or(PrPollResult {
-                ci_status: CiStatus::Passing,
-                approved: true,
-                comments: Vec::new(),
-            })
+            Err(ForgeError::PollScriptExhausted { calls: self.index })
         }
     }
 }
@@ -77,7 +92,7 @@ struct MemoryForgeInner {
 
 /// In-memory forge substitute for behavioral tests.
 ///
-/// Constructed via `MemoryForgeBuilder`; not a mock library — it is a real
+/// Constructed via `MemoryForge::new()`; not a mock library — it is a real
 /// `ForgeAdapter` implementation that stores state in-process.
 pub struct MemoryForge {
     inner: Mutex<MemoryForgeInner>,
@@ -96,44 +111,46 @@ impl MemoryForge {
         })
     }
 
-    /// Pre-load a poll script for a PR number (set before `open_pr` if needed,
-    /// but typically set by `MemoryForgeBuilder::with_poll_script`).
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned (indicates a test-setup bug).
+    /// Pre-load a poll script for a PR number.
     pub fn set_poll_script(&self, pr_number: u64, script: PollScript) {
-        self.inner.lock().expect("lock").poll_scripts.insert(pr_number, script);
+        self.locked().poll_scripts.insert(pr_number, script);
     }
 
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn is_merged(&self, pr_number: u64) -> bool {
-        self.inner.lock().expect("lock").merged.contains(&pr_number)
+        self.locked().merged.contains(&pr_number)
     }
 
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn comments_on(&self, pr_number: u64) -> Vec<(String, String)> {
-        self.inner.lock().expect("lock").comments.get(&pr_number).cloned().unwrap_or_default()
+        self.locked().comments.get(&pr_number).cloned().unwrap_or_default()
+    }
+
+    /// Acquire the inner lock, recovering from mutex poisoning.
+    ///
+    /// Poison recovery is safe here: `MemoryForgeInner` holds independent
+    /// `HashMap`s with no cross-field invariants, so a poisoned lock cannot
+    /// leave the data in an inconsistent state that would corrupt subsequent
+    /// operations.
+    fn locked(&self) -> std::sync::MutexGuard<'_, MemoryForgeInner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 #[async_trait]
 impl ForgeAdapter for MemoryForge {
-    async fn open_pr(&self, _spec: &PrSpec) -> anyhow::Result<OpenedPr> {
-        let mut inner = self.inner.lock().expect("lock");
+    async fn open_pr(&self, _spec: &PrSpec) -> Result<OpenedPr, ForgeError> {
+        let mut inner = self.locked();
         let number = inner.next_number;
         inner.next_number += 1;
         let url = format!("https://forge.example/pr/{number}");
         Ok(OpenedPr { number, url })
     }
 
-    async fn poll_pr(&self, number: u64) -> anyhow::Result<PrPollResult> {
-        let mut inner = self.inner.lock().expect("lock");
+    async fn poll_pr(&self, number: u64) -> Result<PrPollResult, ForgeError> {
+        let mut inner = self.locked();
         if let Some(script) = inner.poll_scripts.get_mut(&number) {
-            return Ok(script.advance());
+            return script.advance();
         }
         Ok(PrPollResult {
             ci_status: CiStatus::Passing,
@@ -142,15 +159,19 @@ impl ForgeAdapter for MemoryForge {
         })
     }
 
-    async fn post_comment(&self, number: u64, body: &str) -> anyhow::Result<String> {
-        let mut inner = self.inner.lock().expect("lock");
-        let comment_id = format!("comment-{}-{}", number, inner.comments.entry(number).or_default().len() + 1);
+    async fn post_comment(&self, number: u64, body: &str) -> Result<String, ForgeError> {
+        let mut inner = self.locked();
+        let comment_id = format!(
+            "comment-{}-{}",
+            number,
+            inner.comments.entry(number).or_default().len() + 1
+        );
         inner.comments.entry(number).or_default().push((comment_id.clone(), body.to_string()));
         Ok(comment_id)
     }
 
-    async fn merge_pr(&self, number: u64) -> anyhow::Result<()> {
-        self.inner.lock().expect("lock").merged.push(number);
+    async fn merge_pr(&self, number: u64) -> Result<(), ForgeError> {
+        self.locked().merged.push(number);
         Ok(())
     }
 }
@@ -205,7 +226,7 @@ impl GiteaForge {
 
 #[async_trait]
 impl ForgeAdapter for GiteaForge {
-    async fn open_pr(&self, spec: &PrSpec) -> anyhow::Result<OpenedPr> {
+    async fn open_pr(&self, spec: &PrSpec) -> Result<OpenedPr, ForgeError> {
         let body = serde_json::json!({
             "title": spec.title,
             "body": spec.body,
@@ -213,30 +234,26 @@ impl ForgeAdapter for GiteaForge {
             "base": spec.base,
         });
 
-        let resp = self.client
+        let json: serde_json::Value = self.client
             .post(self.api_url("/pulls"))
             .header("Authorization", self.auth_header())
             .json(&body)
             .send()
+            .await?
+            .error_for_status()?
+            .json()
             .await?;
 
-        let status = resp.status();
-        let json: serde_json::Value = resp.json().await?;
-
-        if !status.is_success() {
-            anyhow::bail!("Gitea open_pr failed ({status}): {json}");
-        }
-
         let number = json["number"].as_u64()
-            .ok_or_else(|| anyhow::anyhow!("missing PR number in response"))?;
+            .ok_or(ForgeError::MalformedResponse { field: "number" })?;
         let url = json["html_url"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing html_url in response"))?
+            .ok_or(ForgeError::MalformedResponse { field: "html_url" })?
             .to_string();
 
         Ok(OpenedPr { number, url })
     }
 
-    async fn poll_pr(&self, number: u64) -> anyhow::Result<PrPollResult> {
+    async fn poll_pr(&self, number: u64) -> Result<PrPollResult, ForgeError> {
         // Fetch PR state.
         let pr_resp: serde_json::Value = self.client
             .get(self.api_url(&format!("/pulls/{number}")))
@@ -246,7 +263,6 @@ impl ForgeAdapter for GiteaForge {
             .json()
             .await?;
 
-        // Gitea: `mergeable` and review states come from separate endpoints.
         // Check review approvals.
         let reviews_resp: serde_json::Value = self.client
             .get(self.api_url(&format!("/pulls/{number}/reviews")))
@@ -259,10 +275,11 @@ impl ForgeAdapter for GiteaForge {
         let approved = reviews_resp.as_array()
             .is_some_and(|arr| arr.iter().any(|r| r["state"].as_str() == Some("APPROVED")));
 
-        // Map Gitea's `state` field to `CiStatus` via the statuses endpoint.
+        // Map Gitea's commit status to `CiStatus` via the statuses endpoint.
+        let sha = pr_resp["head"]["sha"].as_str()
+            .ok_or(ForgeError::MalformedResponse { field: "head.sha" })?;
         let statuses_resp: serde_json::Value = self.client
-            .get(self.api_url(&format!("/commits/{}/statuses",
-                pr_resp["head"]["sha"].as_str().unwrap_or(""))))
+            .get(self.api_url(&format!("/commits/{sha}/statuses")))
             .header("Authorization", self.auth_header())
             .send()
             .await?
@@ -301,28 +318,24 @@ impl ForgeAdapter for GiteaForge {
         Ok(PrPollResult { ci_status, approved, comments })
     }
 
-    async fn post_comment(&self, number: u64, body: &str) -> anyhow::Result<String> {
-        let resp = self.client
+    async fn post_comment(&self, number: u64, body: &str) -> Result<String, ForgeError> {
+        let json: serde_json::Value = self.client
             .post(self.api_url(&format!("/issues/{number}/comments")))
             .header("Authorization", self.auth_header())
             .json(&serde_json::json!({ "body": body }))
             .send()
+            .await?
+            .error_for_status()?
+            .json()
             .await?;
 
-        let status = resp.status();
-        let json: serde_json::Value = resp.json().await?;
-
-        if !status.is_success() {
-            anyhow::bail!("Gitea post_comment failed ({status}): {json}");
-        }
-
         Ok(json["id"].as_u64()
-            .ok_or_else(|| anyhow::anyhow!("missing comment id in response"))?
+            .ok_or(ForgeError::MalformedResponse { field: "id" })?
             .to_string())
     }
 
-    async fn merge_pr(&self, number: u64) -> anyhow::Result<()> {
-        let resp = self.client
+    async fn merge_pr(&self, number: u64) -> Result<(), ForgeError> {
+        self.client
             .post(self.api_url(&format!("/pulls/{number}/merge")))
             .header("Authorization", self.auth_header())
             .json(&serde_json::json!({
@@ -330,14 +343,8 @@ impl ForgeAdapter for GiteaForge {
                 "merge_message_field": "Merged by Claude-Factory kernel"
             }))
             .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Gitea merge_pr failed ({status}): {body}");
-        }
-
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 }

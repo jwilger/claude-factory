@@ -6,7 +6,7 @@
 
 use crate::{
     events::FactoryEvent,
-    forge::{ForgeAdapter, PrSpec},
+    forge::{ForgeAdapter, ForgeError, PrSpec},
     project::ProjectState,
 };
 use cfk_core::{
@@ -32,7 +32,7 @@ pub enum ReviewError {
     UnexpectedPhase(ReviewSlicePhase),
 
     #[error("forge error: {0}")]
-    Forge(#[from] anyhow::Error),
+    Forge(#[from] ForgeError),
 }
 
 /// Handle `cf_pr_open` — open a PR on the forge and record `ReviewSliceStarted`.
@@ -63,7 +63,8 @@ pub async fn handle_pr_open(
     let spec = PrSpec { title, body, head, base };
     let opened = forge.open_pr(&spec).await?;
 
-    let pr_url = PrUrl::try_new(opened.url).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let pr_url = PrUrl::try_new(opened.url)
+        .map_err(|_| ForgeError::MalformedResponse { field: "pr_url" })?;
     Ok(vec![FactoryEvent::ReviewSliceStarted {
         work_item_id: item.id.clone(),
         pr_number: PrNumber::new(opened.number),
