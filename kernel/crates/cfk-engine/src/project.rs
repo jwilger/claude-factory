@@ -6,10 +6,15 @@
 
 use cfk_core::{
     state_machine::{
+        architecture::AdrWorkItemState,
+        design::DesignWorkItemState,
+        discovery::DiscoveryState,
         review::ReviewSliceState,
         work_item::{WorkItem, WorkItemStatus},
     },
     types::{
+        architecture::AdrRecord,
+        design::DesignComponent,
         ids::{ProjectId, WorkItemId},
         lease::Lease,
         phase::PhaseKind,
@@ -32,6 +37,16 @@ pub struct ProjectState {
     pub dev_states: HashMap<WorkItemId, DevSliceState>,
     /// Review state for each in-progress review slice.
     pub review_states: HashMap<WorkItemId, ReviewSliceState>,
+    /// Discovery state for each in-progress discovery work item.
+    pub discovery_states: HashMap<WorkItemId, DiscoveryState>,
+    /// ADR state for each in-progress architecture work item.
+    pub adr_states: HashMap<WorkItemId, AdrWorkItemState>,
+    /// Global registry of all ADRs (proposed, accepted, rejected).
+    pub adrs: Vec<AdrRecord>,
+    /// Design-system state for each in-progress design work item.
+    pub design_states: HashMap<WorkItemId, DesignWorkItemState>,
+    /// Global Atomic Design component inventory.
+    pub design_inventory: Vec<DesignComponent>,
     /// Which phases are active (initialized).
     pub active_phases: Vec<PhaseKind>,
 }
@@ -48,6 +63,11 @@ impl ProjectState {
             leases: Vec::new(),
             dev_states: HashMap::new(),
             review_states: HashMap::new(),
+            discovery_states: HashMap::new(),
+            adr_states: HashMap::new(),
+            adrs: Vec::new(),
+            design_states: HashMap::new(),
+            design_inventory: Vec::new(),
             active_phases: PhaseKind::all().to_vec(),
         }
     }

@@ -1,16 +1,22 @@
 //! MCP server implementation — exposes `cf_*` tools over stdio.
 
 use cfk_core::{
-    state_machine::work_item::{WorkItem, WorkItemStatus},
+    state_machine::{
+        architecture::AdrPhase,
+        discovery::DiscoveryPhase,
+        work_item::{WorkItem, WorkItemStatus},
+    },
     types::{
+        design::AtomicKind,
         gate::{GateKind, GateVerdict, VetoReason},
-        ids::WorkItemId,
+        ids::{AdrId, ComponentId, WorkItemId},
         phase::PhaseKind,
         routing::WorkType,
         tdd::TddPhase,
     },
 };
 use cfk_engine::{
+    architecture::project_architecture_md,
     checks::load_checks,
     commands::{CommandError, handle_claim, handle_next_step, validate_gate_verdict},
     config::default_routing_table,
@@ -151,6 +157,52 @@ pub struct PrMergeParams {
     pub work_item_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DiscoverySubmitParams {
+    /// The `work_item_id` of the discovery work item.
+    pub work_item_id: String,
+    /// The product brief (context, risks, opportunity summary).
+    pub brief_content: String,
+    /// Workflow names to queue for event modeling (e.g. `["place order", "track shipment"]`).
+    pub workflows: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DiscoveryApproveParams {
+    /// The `work_item_id` of the discovery work item.
+    pub work_item_id: String,
+    /// `true` to approve and queue workflows; `false` to reset for re-run.
+    pub approved: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AdrSubmitParams {
+    /// The `work_item_id` of the architecture work item.
+    pub work_item_id: String,
+    /// Short title for the ADR (e.g. `"Use PostgreSQL for event store"`).
+    pub title: String,
+    /// Full ADR content (Context / Decision / Consequences format).
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DesignAddComponentParams {
+    /// The `work_item_id` of the design-system work item.
+    pub work_item_id: String,
+    /// Component name (e.g. `"PrimaryButton"`).
+    pub name: String,
+    /// Atomic Design level: `quark` | `atom` | `molecule` | `organism` | `template` | `page`.
+    pub kind: String,
+    /// Optional emc slice slug this component satisfies.
+    pub slice_ref: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DesignCrossCheckParams {
+    /// Workflow names whose slices should be cross-checked for missing components.
+    pub workflows: Vec<String>,
+}
+
 // ── Response types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -288,6 +340,8 @@ fn parse_work_type(s: &str) -> Option<WorkType> {
         "socratic_discovery" => Some(WorkType::SocraticDiscovery),
         "event_model_authoring" => Some(WorkType::EventModelAuthoring),
         "adr_drafting" => Some(WorkType::AdrDrafting),
+        "adr_review" => Some(WorkType::AdrReview),
+        "design_system_build" => Some(WorkType::DesignSystemBuild),
         "outer_behavioral_test_writing" => Some(WorkType::OuterBehavioralTestWriting),
         "test_review" => Some(WorkType::TestReview),
         "narrowest_step_implementation" => Some(WorkType::NarrowestStepImplementation),
@@ -700,40 +754,58 @@ For other phases: any JSON value is accepted as evidence.")]
     }
 
     #[tool(description = "\
-Record a gate verdict (test review or implementation review). \
+Record a gate verdict (test review, implementation review, or ADR review). \
 The reviewer identity must differ from the work item's claiming session. \
-When vetoed, `reason` is required and the TDD cycle loops back. \
-When approved, the TDD cycle advances to the next phase.")]
+For TDD gates: when vetoed, the cycle loops back; when approved, it advances. \
+For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects it. \
+`reason` is required when vetoed.")]
     async fn cf_gate(
         &self,
         Parameters(params): Parameters<GateParams>,
     ) -> Result<CallToolResult, McpError> {
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
-        // Extract state into owned values before taking the write lock for emit.
-        let (gate_kind, reviewer_ok) = {
+        // Determine gate kind and validate reviewer before taking write lock.
+        let (gate_kind, reviewer_ok, is_adr_gate, adr_id_and_root) = {
             let guard = self.state.read().await;
             let proj = guard.project.as_ref()
                 .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
 
-            let current_phase = proj.dev_states.get(&work_item_id)
+            // Check TDD gate first.
+            let tdd_phase = proj.dev_states.get(&work_item_id)
                 .and_then(|d| d.current_phase()).cloned();
 
-            let gk = match current_phase.as_ref() {
-                Some(TddPhase::TestReviewGate) => GateKind::TestReview,
-                Some(TddPhase::ImplReviewGate) => GateKind::ImplementationReview,
-                other => {
-                    return Ok(tool_error(format!(
-                        "work item {} is not at a gate (current TDD phase: {:?})",
-                        params.work_item_id, other
-                    )));
+            let (gk, is_adr) = match tdd_phase.as_ref() {
+                Some(TddPhase::TestReviewGate) => (GateKind::TestReview, false),
+                Some(TddPhase::ImplReviewGate) => (GateKind::ImplementationReview, false),
+                _ => {
+                    // Check if it's an ADR gate.
+                    let adr_phase = proj.adr_states.get(&work_item_id).map(|a| &a.phase);
+                    if adr_phase == Some(&AdrPhase::PendingReview) {
+                        (GateKind::AdrReview, true)
+                    } else {
+                        return Ok(tool_error(format!(
+                            "work item {} is not at a gate (TDD phase: {:?}, ADR phase: {:?})",
+                            params.work_item_id,
+                            tdd_phase,
+                            adr_phase,
+                        )));
+                    }
                 }
+            };
+
+            let adr_info = if is_adr {
+                let adr_id = proj.adr_states.get(&work_item_id)
+                    .and_then(|a| a.adr_id.clone());
+                Some((adr_id, guard.project_root.clone()))
+            } else {
+                None
             };
 
             let ok = validate_gate_verdict(
                 proj, &work_item_id, &params.reviewer_id, gk, &GateVerdict::Approved,
             );
-            (gk, ok)
+            (gk, ok, is_adr, adr_info)
         };
 
         reviewer_ok.map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
@@ -757,11 +829,52 @@ When approved, the TDD cycle advances to the next phase.")]
             }
         };
 
+        if is_adr_gate {
+            let accepted = verdict.is_approved();
+            let (adr_id_opt, project_root) = adr_id_and_root
+                .expect("adr gate always has adr_info");
+            let adr_id = adr_id_opt.ok_or_else(|| {
+                McpError::internal_error("ADR has no ID yet", None)
+            })?;
+
+            let reason = match &verdict {
+                GateVerdict::Vetoed { reason } => Some(reason.clone().into_inner()),
+                GateVerdict::Approved => None,
+            };
+
+            let mut guard = self.state.write().await;
+            guard.emit(FactoryEvent::AdrDecided {
+                work_item_id: work_item_id.clone(),
+                adr_id: adr_id.clone(),
+                accepted,
+                reason,
+            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+            guard.emit(FactoryEvent::WorkItemCompleted {
+                work_item_id: work_item_id.clone(),
+            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+            // Project ARCHITECTURE.md when an ADR is accepted.
+            if accepted && let Some(ref proj) = guard.project {
+                project_architecture_md(&project_root, &proj.adrs)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
+
+            return content_json(&serde_json::json!({
+                "work_item_id": params.work_item_id,
+                "adr_id": adr_id.to_string(),
+                "accepted": accepted,
+            }));
+        }
+
+        // TDD gate path.
         let new_phase = match (&gate_kind, &verdict) {
             (GateKind::TestReview, GateVerdict::Approved) => TddPhase::RedCheck,
             (GateKind::TestReview, GateVerdict::Vetoed { .. }) => TddPhase::WriteTest,
             (GateKind::ImplementationReview, GateVerdict::Approved) => TddPhase::LintCheck,
             (GateKind::ImplementationReview, GateVerdict::Vetoed { .. }) => TddPhase::Implement,
+            // AdrReview handled above; unreachable here.
+            (GateKind::AdrReview, _) => unreachable!("ADR gates return early"),
         };
 
         let new_phase_label = tdd_phase_label(&new_phase);
@@ -1155,6 +1268,268 @@ in `all_green` state (CI passing + approved). Marks the slice as done.")]
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
             "merged": true,
+        }))
+    }
+
+    // ── Discovery phase tools ─────────────────────────────────────────────
+
+    #[tool(description = "\
+Submit a discovery brief and workflow list (called by the discovery agent). \
+`brief_content` is the product brief; `workflows` is the list of workflow \
+names to queue for event modeling on human approval.")]
+    async fn cf_discovery_submit(
+        &self,
+        Parameters(params): Parameters<DiscoverySubmitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+        }
+
+        if params.brief_content.trim().is_empty() {
+            return Ok(tool_error("brief_content must not be empty"));
+        }
+        if params.workflows.is_empty() {
+            return Ok(tool_error("workflows must not be empty"));
+        }
+
+        let mut guard = self.state.write().await;
+        guard.emit(FactoryEvent::DiscoveryBriefDrafted {
+            work_item_id,
+            brief_content: params.brief_content.clone(),
+            workflows: params.workflows.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "workflows": params.workflows,
+        }))
+    }
+
+    #[tool(description = "\
+Approve or reject a discovery brief (human gate). If approved, all submitted \
+workflows are queued as event-modeling work items and the discovery work item \
+is completed. If rejected, the discovery dialogue resets for a re-run.")]
+    async fn cf_discovery_approve(
+        &self,
+        Parameters(params): Parameters<DiscoveryApproveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        let workflows = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+            let disc = proj.discovery_states.get(&work_item_id).ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("work item {} has no discovery brief yet", params.work_item_id),
+                    None,
+                )
+            })?;
+
+            if disc.phase != DiscoveryPhase::BriefReady {
+                return Ok(tool_error(format!(
+                    "work item {} is not in BriefReady phase (current: {:?})",
+                    params.work_item_id, disc.phase,
+                )));
+            }
+
+            disc.workflows.clone()
+        };
+
+        let mut guard = self.state.write().await;
+        guard.emit(FactoryEvent::DiscoveryApproved {
+            work_item_id: work_item_id.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut queued_ids: Vec<String> = Vec::new();
+
+        if params.approved {
+            for workflow_name in &workflows {
+                let item = WorkItem::new(
+                    WorkItemId::new(),
+                    PhaseKind::EventModeling,
+                    WorkType::EventModelAuthoring,
+                    format!("Model workflow: {workflow_name}"),
+                );
+                queued_ids.push(item.id.to_string());
+                guard.emit(FactoryEvent::WorkItemAdded { work_item: item })
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
+
+            guard.emit(FactoryEvent::WorkItemCompleted {
+                work_item_id: work_item_id.clone(),
+            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "approved": params.approved,
+            "queued_event_modeling_items": queued_ids,
+        }))
+    }
+
+    // ── Architecture phase tools ──────────────────────────────────────────
+
+    #[tool(description = "\
+Submit an ADR draft (called by the architect agent). `title` is a short \
+decision title; `content` follows Context / Decision / Consequences format. \
+Returns the assigned ADR ID. After submission the ADR enters review gate.")]
+    async fn cf_adr_submit(
+        &self,
+        Parameters(params): Parameters<AdrSubmitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+        }
+
+        if params.title.trim().is_empty() {
+            return Ok(tool_error("title must not be empty"));
+        }
+        if params.content.trim().is_empty() {
+            return Ok(tool_error("content must not be empty"));
+        }
+
+        let adr_id = AdrId::new();
+
+        let mut guard = self.state.write().await;
+        guard.emit(FactoryEvent::AdrDrafted {
+            work_item_id,
+            adr_id: adr_id.clone(),
+            title: params.title.clone(),
+            content: params.content.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "adr_id": adr_id.to_string(),
+            "title": params.title,
+        }))
+    }
+
+    // ── Design-system phase tools ─────────────────────────────────────────
+
+    #[tool(description = "\
+Add a design component to the Atomic Design inventory (called by the \
+design-system agent). Marks the work item as done. \
+`kind`: `quark` | `atom` | `molecule` | `organism` | `template` | `page`.")]
+    async fn cf_design_add_component(
+        &self,
+        Parameters(params): Parameters<DesignAddComponentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+        }
+
+        if params.name.trim().is_empty() {
+            return Ok(tool_error("name must not be empty"));
+        }
+
+        let kind = match params.kind.as_str() {
+            "quark" => AtomicKind::Quark,
+            "atom" => AtomicKind::Atom,
+            "molecule" => AtomicKind::Molecule,
+            "organism" => AtomicKind::Organism,
+            "template" => AtomicKind::Template,
+            "page" => AtomicKind::Page,
+            other => return Ok(tool_error(format!(
+                "unknown kind '{other}': expected quark | atom | molecule | organism | template | page"
+            ))),
+        };
+
+        let component_id = ComponentId::new();
+
+        let mut guard = self.state.write().await;
+        guard.emit(FactoryEvent::DesignComponentAdded {
+            work_item_id: work_item_id.clone(),
+            component_id: component_id.clone(),
+            name: params.name.clone(),
+            kind,
+            slice_ref: params.slice_ref.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        guard.emit(FactoryEvent::WorkItemCompleted {
+            work_item_id: work_item_id.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "component_id": component_id.to_string(),
+            "name": params.name,
+            "kind": params.kind,
+        }))
+    }
+
+    #[tool(description = "\
+Run the design-system cross-check: for each named workflow, create a \
+`design_system_build` work item for any component not yet in the inventory. \
+The cross-check is deterministic — it only generates items for gaps. \
+Returns the IDs of any new work items created.")]
+    async fn cf_design_cross_check(
+        &self,
+        Parameters(params): Parameters<DesignCrossCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let existing_names: std::collections::HashSet<String> = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            proj.design_inventory.iter().map(|c| c.name.clone()).collect()
+        };
+
+        let mut new_item_ids: Vec<String> = Vec::new();
+        let mut guard = self.state.write().await;
+
+        for workflow in &params.workflows {
+            let component_name = format!("{workflow} Page");
+            if !existing_names.contains(&component_name) {
+                let item = WorkItem::new(
+                    WorkItemId::new(),
+                    PhaseKind::DesignSystem,
+                    WorkType::DesignSystemBuild,
+                    format!("Design component for workflow: {workflow}"),
+                );
+                let id_str = item.id.to_string();
+                guard.emit(FactoryEvent::WorkItemAdded { work_item: item })
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                new_item_ids.push(id_str);
+            }
+        }
+
+        if !new_item_ids.is_empty() {
+            guard.emit(FactoryEvent::DesignCrossCheckCompleted {
+                generated_item_ids: new_item_ids.iter()
+                    .filter_map(|s| {
+                        Uuid::parse_str(s).ok()
+                            .and_then(|u| WorkItemId::try_new(u).ok())
+                    })
+                    .collect(),
+            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+
+        content_json(&serde_json::json!({
+            "new_work_item_ids": new_item_ids,
+            "gap_count": new_item_ids.len(),
         }))
     }
 }

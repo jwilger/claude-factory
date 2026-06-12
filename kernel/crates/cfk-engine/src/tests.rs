@@ -1891,3 +1891,795 @@ mod m3_emc_integration {
         assert_eq!(replayed_item.emc_slug.as_deref(), Some("add-command"), "emc_slug preserved through replay");
     }
 }
+
+// ── M5: Discovery phase ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod discovery_phase {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::{
+            discovery::DiscoveryPhase,
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            ids::{ProjectId, WorkItemId},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    fn test_project(root: &std::path::Path, seq: &mut u64) -> ProjectState {
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        append(root, seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+        state
+    }
+
+    fn seed_discovery_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Discovery,
+            WorkType::SocraticDiscovery,
+            "Discover the inventory management product.".to_string(),
+        );
+        let id = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        id
+    }
+
+    #[test]
+    fn next_step_for_unclaimed_discovery_item_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seq = 0;
+        let mut state = test_project(dir.path(), &mut seq);
+        seed_discovery_item(dir.path(), &mut state, &mut seq);
+
+        let resp = handle_next_step(&state, None).unwrap();
+        assert!(matches!(resp, NextStepResponse::Ready(_)));
+    }
+
+    #[test]
+    fn dialogue_step_returned_for_in_progress_discovery_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_discovery_item(root, &mut state, &mut seq);
+
+        // Claim the item.
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert_eq!(step.work_item_id, wid);
+        assert!(matches!(step.action, StepAction::SpawnAgent { .. }));
+    }
+
+    #[test]
+    fn brief_ready_step_is_ask_human() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_discovery_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        // Agent submits brief.
+        append(root, &mut seq, FactoryEvent::DiscoveryBriefDrafted {
+            work_item_id: wid.clone(),
+            brief_content: "A brief for inventory management.".to_string(),
+            workflows: vec!["receive stock".to_string(), "pick and ship".to_string()],
+        }, &mut state);
+
+        assert_eq!(
+            state.discovery_states.get(&wid).map(|d| &d.phase),
+            Some(&DiscoveryPhase::BriefReady),
+        );
+
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert!(matches!(step.action, StepAction::AskHuman { .. }));
+    }
+
+    #[test]
+    fn approved_discovery_queues_workflows_and_completes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_discovery_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+        append(root, &mut seq, FactoryEvent::DiscoveryBriefDrafted {
+            work_item_id: wid.clone(),
+            brief_content: "Inventory management brief.".to_string(),
+            workflows: vec!["receive stock".to_string(), "pick and ship".to_string()],
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::DiscoveryApproved { work_item_id: wid.clone() }, &mut state);
+
+        // Queue two event-modeling work items.
+        let em1 = WorkItem::new(WorkItemId::new(), PhaseKind::EventModeling, WorkType::EventModelAuthoring, "Model workflow: receive stock".to_string());
+        let em2 = WorkItem::new(WorkItemId::new(), PhaseKind::EventModeling, WorkType::EventModelAuthoring, "Model workflow: pick and ship".to_string());
+        let em1_id = em1.id.clone();
+        let em2_id = em2.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: em1 }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: em2 }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
+
+        let disc_item = state.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(disc_item.status, WorkItemStatus::Done, "discovery item must be completed");
+
+        let em1_item = state.work_items.iter().find(|i| i.id == em1_id).unwrap();
+        assert_eq!(em1_item.phase, PhaseKind::EventModeling, "first workflow must be queued");
+        let em2_item = state.work_items.iter().find(|i| i.id == em2_id).unwrap();
+        assert_eq!(em2_item.phase, PhaseKind::EventModeling, "second workflow must be queued");
+
+        // Restart durability.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        let replayed_disc = replayed.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(replayed_disc.status, WorkItemStatus::Done, "discovery done survives restart");
+    }
+}
+
+// ── M5: Architecture phase ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod architecture_phase {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::{
+            architecture::{AdrPhase},
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            architecture::AdrStatus,
+            gate::{GateKind, GateVerdict, VetoReason},
+            ids::{AdrId, ProjectId, WorkItemId},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    fn test_project(root: &std::path::Path, seq: &mut u64) -> ProjectState {
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        append(root, seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+        state
+    }
+
+    fn seed_adr_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Architecture,
+            WorkType::AdrDrafting,
+            "Decide on event store technology.".to_string(),
+        );
+        let id = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        id
+    }
+
+    #[test]
+    fn drafting_step_returned_for_in_progress_adr_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_adr_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert!(matches!(step.action, StepAction::SpawnAgent { .. }), "drafting must be SpawnAgent");
+    }
+
+    #[test]
+    fn pending_review_step_is_gate_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_adr_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let adr_id = AdrId::new();
+        append(root, &mut seq, FactoryEvent::AdrDrafted {
+            work_item_id: wid.clone(),
+            adr_id: adr_id.clone(),
+            title: "Use SQLite for event store".to_string(),
+            content: "Context: ...\nDecision: SQLite\nConsequences: ...".to_string(),
+        }, &mut state);
+
+        assert_eq!(
+            state.adr_states.get(&wid).map(|a| &a.phase),
+            Some(&AdrPhase::PendingReview),
+        );
+        assert_eq!(state.adrs.len(), 1);
+
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert!(
+            matches!(step.action, StepAction::GateReview { gate_kind: GateKind::AdrReview, .. }),
+            "pending review must be GateReview(AdrReview)"
+        );
+    }
+
+    #[test]
+    fn accepted_adr_completes_work_item_and_updates_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_adr_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let adr_id = AdrId::new();
+        append(root, &mut seq, FactoryEvent::AdrDrafted {
+            work_item_id: wid.clone(),
+            adr_id: adr_id.clone(),
+            title: "Use SQLite for event store".to_string(),
+            content: "Context: ...\nDecision: SQLite\nConsequences: ...".to_string(),
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::AdrDecided {
+            work_item_id: wid.clone(),
+            adr_id: adr_id.clone(),
+            accepted: true,
+            reason: None,
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
+
+        assert_eq!(state.adr_states.get(&wid).map(|a| &a.phase), Some(&AdrPhase::Accepted));
+        assert_eq!(state.adrs[0].status, AdrStatus::Accepted);
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid).map(|i| &i.status),
+            Some(&WorkItemStatus::Done),
+        );
+
+        // Restart durability.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(replayed.adrs[0].status, AdrStatus::Accepted, "accepted ADR survives restart");
+    }
+
+    #[test]
+    fn vetoed_adr_marks_rejected_in_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_adr_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let adr_id = AdrId::new();
+        append(root, &mut seq, FactoryEvent::AdrDrafted {
+            work_item_id: wid.clone(),
+            adr_id: adr_id.clone(),
+            title: "Use raw SQL everywhere".to_string(),
+            content: "Context: ...\nDecision: raw SQL\nConsequences: ...".to_string(),
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::AdrDecided {
+            work_item_id: wid.clone(),
+            adr_id: adr_id.clone(),
+            accepted: false,
+            reason: Some("Contradicts event-sourcing constraint.".to_string()),
+        }, &mut state);
+
+        assert_eq!(state.adr_states.get(&wid).map(|a| &a.phase), Some(&AdrPhase::Rejected));
+        assert_eq!(state.adrs[0].status, AdrStatus::Rejected);
+    }
+
+    /// Suppresses unused-import warnings for types used only as match patterns.
+    #[allow(dead_code)]
+    fn _use_types() {
+        let _ = GateVerdict::Approved;
+        let _ = VetoReason::try_new("x".to_string());
+    }
+}
+
+// ── M5: Design-system phase ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod design_system_phase {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::{
+            design::DesignPhase,
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            design::AtomicKind,
+            ids::{ComponentId, ProjectId, WorkItemId},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    fn test_project(root: &std::path::Path, seq: &mut u64) -> ProjectState {
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        append(root, seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+        state
+    }
+
+    fn seed_design_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::DesignSystem,
+            WorkType::DesignSystemBuild,
+            "Design component for workflow: receive stock".to_string(),
+        );
+        let id = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        id
+    }
+
+    #[test]
+    fn building_step_returned_for_in_progress_design_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_design_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert!(matches!(step.action, StepAction::SpawnAgent { .. }), "building must be SpawnAgent");
+    }
+
+    #[test]
+    fn component_added_updates_inventory_and_completes_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_design_item(root, &mut state, &mut seq);
+
+        let lease = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                "alice".to_string(),
+            )
+            .unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        let component_id = ComponentId::new();
+        append(root, &mut seq, FactoryEvent::DesignComponentAdded {
+            work_item_id: wid.clone(),
+            component_id: component_id.clone(),
+            name: "ReceiveStockPage".to_string(),
+            kind: AtomicKind::Page,
+            slice_ref: None,
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
+
+        assert_eq!(
+            state.design_states.get(&wid).map(|d| &d.phase),
+            Some(&DesignPhase::Done),
+        );
+        assert_eq!(state.design_inventory.len(), 1);
+        assert_eq!(state.design_inventory[0].name, "ReceiveStockPage");
+        assert_eq!(state.design_inventory[0].kind, AtomicKind::Page);
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid).map(|i| &i.status),
+            Some(&WorkItemStatus::Done),
+        );
+
+        // Restart durability.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(replayed.design_inventory.len(), 1, "component inventory survives restart");
+        assert_eq!(replayed.design_inventory[0].name, "ReceiveStockPage");
+    }
+
+    #[test]
+    fn cross_check_generates_items_for_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        // Pre-populate: one component for "receive stock" workflow.
+        let comp_id = ComponentId::new();
+        let pre_existing_item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::DesignSystem,
+            WorkType::DesignSystemBuild,
+            "existing".to_string(),
+        );
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: pre_existing_item.clone() }, &mut state);
+        append(root, &mut seq, FactoryEvent::DesignComponentAdded {
+            work_item_id: pre_existing_item.id.clone(),
+            component_id: comp_id.clone(),
+            name: "receive stock Page".to_string(),
+            kind: AtomicKind::Page,
+            slice_ref: None,
+        }, &mut state);
+
+        // Cross-check: two workflows, one already covered.
+        let gap_item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::DesignSystem,
+            WorkType::DesignSystemBuild,
+            "Design component for workflow: pick and ship".to_string(),
+        );
+        let gap_id = gap_item.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: gap_item }, &mut state);
+        append(root, &mut seq, FactoryEvent::DesignCrossCheckCompleted {
+            generated_item_ids: vec![gap_id.clone()],
+        }, &mut state);
+
+        // Only the gap item was created; inventory still has 1 entry.
+        let design_items: Vec<_> = state.work_items.iter()
+            .filter(|i| i.phase == PhaseKind::DesignSystem && i.id != pre_existing_item.id)
+            .collect();
+        assert_eq!(design_items.len(), 1, "one gap item created for pick-and-ship");
+        assert_eq!(design_items[0].id, gap_id);
+    }
+}
+
+// ── M5 exit criterion ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod m5_exit_criterion {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::work_item::{WorkItem, WorkItemStatus},
+        types::{
+            architecture::AdrStatus,
+            design::AtomicKind,
+            ids::{AdrId, ComponentId, ProjectId, WorkItemId},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    /// M5 exit criterion: each of the three new phases (Discovery, Architecture,
+    /// Design-system) runs individually on toy product data, with restart
+    /// durability verified for each.
+    #[test]
+    fn all_three_phases_run_individually_on_toy_product() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        let mut seq = 0u64;
+        append(root, &mut seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+
+        // ── 1. Discovery phase ───────────────────────────────────────────
+
+        let disc_item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Discovery,
+            WorkType::SocraticDiscovery,
+            "Discover toy product.".to_string(),
+        );
+        let disc_id = disc_item.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: disc_item }, &mut state);
+
+        let lease_disc = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: disc_id.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new("alice".to_string()).unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease: lease_disc }, &mut state);
+
+        // cf_next_step → SpawnAgent(SocraticDiscovery)
+        let resp = handle_next_step(&state, Some(PhaseKind::Discovery)).unwrap();
+        assert!(matches!(resp, NextStepResponse::Ready(ref s) if matches!(s.action, StepAction::SpawnAgent { .. })));
+
+        // Agent submits brief.
+        append(root, &mut seq, FactoryEvent::DiscoveryBriefDrafted {
+            work_item_id: disc_id.clone(),
+            brief_content: "Toy product manages widgets.".to_string(),
+            workflows: vec!["add widget".to_string(), "remove widget".to_string()],
+        }, &mut state);
+
+        // cf_next_step → AskHuman
+        let resp = handle_next_step(&state, Some(PhaseKind::Discovery)).unwrap();
+        assert!(matches!(resp, NextStepResponse::Ready(ref s) if matches!(s.action, StepAction::AskHuman { .. })));
+
+        // Human approves → workflows queued.
+        append(root, &mut seq, FactoryEvent::DiscoveryApproved { work_item_id: disc_id.clone() }, &mut state);
+        let em1 = WorkItem::new(WorkItemId::new(), PhaseKind::EventModeling, WorkType::EventModelAuthoring, "Model workflow: add widget".to_string());
+        let em2 = WorkItem::new(WorkItemId::new(), PhaseKind::EventModeling, WorkType::EventModelAuthoring, "Model workflow: remove widget".to_string());
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: em1 }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: em2 }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: disc_id.clone() }, &mut state);
+
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == disc_id).map(|i| &i.status),
+            Some(&WorkItemStatus::Done),
+            "discovery done",
+        );
+        let em_items: Vec<_> = state.work_items.iter().filter(|i| i.phase == PhaseKind::EventModeling).collect();
+        assert_eq!(em_items.len(), 2, "two event-modeling items queued");
+
+        // Restart durability for discovery.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(
+            replayed.work_items.iter().find(|i| i.id == disc_id).map(|i| &i.status),
+            Some(&WorkItemStatus::Done),
+            "discovery survives restart",
+        );
+
+        // ── 2. Architecture phase ────────────────────────────────────────
+
+        let adr_item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Architecture,
+            WorkType::AdrDrafting,
+            "Decide widget store technology.".to_string(),
+        );
+        let adr_wid = adr_item.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: adr_item }, &mut state);
+
+        let lease_adr = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: adr_wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new("alice".to_string()).unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease: lease_adr }, &mut state);
+
+        // cf_next_step → SpawnAgent(AdrDrafting)
+        let resp = handle_next_step(&state, Some(PhaseKind::Architecture)).unwrap();
+        assert!(matches!(resp, NextStepResponse::Ready(ref s) if matches!(s.action, StepAction::SpawnAgent { .. })));
+
+        // Agent submits draft.
+        let adr_id = AdrId::new();
+        append(root, &mut seq, FactoryEvent::AdrDrafted {
+            work_item_id: adr_wid.clone(),
+            adr_id: adr_id.clone(),
+            title: "Use in-memory store for widgets".to_string(),
+            content: "Context: toy product.\nDecision: in-memory.\nConsequences: simple.".to_string(),
+        }, &mut state);
+
+        // cf_next_step → GateReview(AdrReview)
+        let resp = handle_next_step(&state, Some(PhaseKind::Architecture)).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert!(
+            matches!(step.action, StepAction::GateReview { gate_kind: cfk_core::types::gate::GateKind::AdrReview, .. }),
+            "ADR gate review step"
+        );
+
+        // Reviewer approves.
+        append(root, &mut seq, FactoryEvent::AdrDecided {
+            work_item_id: adr_wid.clone(),
+            adr_id: adr_id.clone(),
+            accepted: true,
+            reason: None,
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: adr_wid.clone() }, &mut state);
+
+        assert_eq!(state.adrs[0].status, AdrStatus::Accepted, "ADR accepted");
+
+        // Restart durability for architecture.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(replayed.adrs[0].status, AdrStatus::Accepted, "ADR accepted survives restart");
+
+        // ── 3. Design-system phase ───────────────────────────────────────
+
+        let ds_item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::DesignSystem,
+            WorkType::DesignSystemBuild,
+            "Design widget list page.".to_string(),
+        );
+        let ds_wid = ds_item.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: ds_item }, &mut state);
+
+        let lease_ds = cfk_core::types::lease::Lease {
+            id: cfk_core::types::ids::LeaseId::new(),
+            work_item_id: ds_wid.clone(),
+            session_identity: cfk_core::types::lease::SessionIdentity::try_new("alice".to_string()).unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease: lease_ds }, &mut state);
+
+        // cf_next_step → SpawnAgent(DesignSystemBuild)
+        let resp = handle_next_step(&state, Some(PhaseKind::DesignSystem)).unwrap();
+        assert!(matches!(resp, NextStepResponse::Ready(ref s) if matches!(s.action, StepAction::SpawnAgent { .. })));
+
+        // Agent adds component.
+        let comp_id = ComponentId::new();
+        append(root, &mut seq, FactoryEvent::DesignComponentAdded {
+            work_item_id: ds_wid.clone(),
+            component_id: comp_id.clone(),
+            name: "WidgetListPage".to_string(),
+            kind: AtomicKind::Page,
+            slice_ref: Some("add-widget".to_string()),
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: ds_wid.clone() }, &mut state);
+
+        assert_eq!(state.design_inventory.len(), 1);
+        assert_eq!(state.design_inventory[0].name, "WidgetListPage");
+
+        // Restart durability for design system.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(replayed.design_inventory.len(), 1, "design inventory survives restart");
+        assert_eq!(replayed.design_inventory[0].name, "WidgetListPage");
+        assert_eq!(
+            replayed.work_items.iter().filter(|i| i.status == WorkItemStatus::Done).count(),
+            3, // discovery + architecture + design = 3 done items
+            "all three phases completed",
+        );
+    }
+}

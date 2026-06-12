@@ -38,3 +38,5 @@ uuid_id!(GateId);
 uuid_id!(EscalationId);
 uuid_id!(SliceId);
 uuid_id!(WorkflowId);
+uuid_id!(AdrId);
+uuid_id!(ComponentId);

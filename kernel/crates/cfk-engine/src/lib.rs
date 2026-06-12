@@ -3,6 +3,7 @@
 //! This crate owns all I/O: the event store, routing table loading, and
 //! the command handlers that call cfk-core pure functions.
 
+pub mod architecture;
 pub mod checks;
 pub mod emc;
 pub mod commands;

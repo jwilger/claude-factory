@@ -110,6 +110,48 @@ pub enum FactoryEvent {
     ReviewAllGreen { work_item_id: WorkItemId },
     /// The PR was merged; the slice is done.
     ReviewPrMerged { work_item_id: WorkItemId },
+
+    // ── Discovery phase events ───────────────────────────────────────────
+    /// The discovery agent submitted a product brief with workflow list.
+    DiscoveryBriefDrafted {
+        work_item_id: WorkItemId,
+        brief_content: String,
+        /// Workflow names to be queued for event modeling on approval.
+        workflows: Vec<String>,
+    },
+    /// Human approved the discovery brief; workflows are queued.
+    DiscoveryApproved { work_item_id: WorkItemId },
+
+    // ── Architecture phase events ────────────────────────────────────────
+    /// An architect agent submitted an ADR draft.
+    AdrDrafted {
+        work_item_id: WorkItemId,
+        adr_id: cfk_core::types::ids::AdrId,
+        title: String,
+        content: String,
+    },
+    /// A reviewer gate recorded a verdict on an ADR.
+    AdrDecided {
+        work_item_id: WorkItemId,
+        adr_id: cfk_core::types::ids::AdrId,
+        accepted: bool,
+        reason: Option<String>,
+    },
+
+    // ── Design-system phase events ───────────────────────────────────────
+    /// A design component was added to the inventory.
+    DesignComponentAdded {
+        work_item_id: WorkItemId,
+        component_id: cfk_core::types::ids::ComponentId,
+        name: String,
+        kind: cfk_core::types::design::AtomicKind,
+        slice_ref: Option<String>,
+    },
+    /// The design cross-check ran and generated work items for gaps.
+    DesignCrossCheckCompleted {
+        /// IDs of work items generated for missing components.
+        generated_item_ids: Vec<WorkItemId>,
+    },
 }
 
 /// A persisted event with metadata.

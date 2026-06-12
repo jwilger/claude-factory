@@ -7,6 +7,8 @@
 use crate::project::ProjectState;
 use cfk_core::{
     state_machine::{
+        architecture::AdrPhase,
+        discovery::DiscoveryPhase,
         review::ReviewSlicePhase,
         work_item::{next_ready, validate_claim},
     },
@@ -16,7 +18,7 @@ use cfk_core::{
         lease::{Lease, SessionIdentity},
         phase::PhaseKind,
         routing::WorkType,
-        step::{IdleReason, ReadyStep, StepAction, StepPrompt},
+        step::{HumanQuestion, IdleReason, ReadyStep, StepAction, StepPrompt},
         tdd::TddPhase,
     },
 };
@@ -208,6 +210,170 @@ fn review_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyS
     })
 }
 
+/// Build the next step for a discovery work item based on its current phase.
+///
+/// Returns `None` if the phase is terminal (`Approved`).
+fn discovery_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep> {
+    let item = state.work_items.iter().find(|i| &i.id == work_item_id)?;
+    let step_id = StepId::new();
+
+    let disc = state.discovery_states.get(work_item_id);
+
+    let action: StepAction = match disc.map(|d| &d.phase) {
+        None | Some(DiscoveryPhase::Dialogue) => {
+            let executor = cfk_core::routing::resolve(&state.routing, WorkType::SocraticDiscovery)
+                .ok()?.clone();
+            let prompt = build_prompt(&format!(
+                "Run a socratic discovery dialogue for: {}\n\n\
+                 Explore value, usability, feasibility, and viability risks.\n\
+                 Enumerate the key workflows and user journeys.\n\
+                 When done, submit via `cf_discovery_submit` with:\n\
+                 - `brief_content`: a concise product brief covering risks and opportunities\n\
+                 - `workflows`: list of workflow names for event modeling",
+                item.description,
+            ));
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        Some(DiscoveryPhase::BriefReady) => {
+            let brief = disc
+                .and_then(|d| d.brief_content.as_deref())
+                .unwrap_or("(brief not available)");
+            let question = HumanQuestion::try_new(format!(
+                "Discovery brief ready for: {}\n\n\
+                 Brief:\n{brief}\n\n\
+                 Approve to queue workflows for event modeling, or reject to re-run discovery.",
+                item.description,
+            )).expect("non-empty question");
+            StepAction::AskHuman { question }
+        }
+        Some(DiscoveryPhase::Approved) => return None,
+    };
+
+    Some(ReadyStep {
+        step_id,
+        work_item_id: work_item_id.clone(),
+        phase: item.phase,
+        action,
+    })
+}
+
+/// Build the next step for an architecture (ADR) work item based on its current phase.
+///
+/// Returns `None` if the phase is terminal (`Accepted` or `Rejected`).
+fn architecture_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep> {
+    let item = state.work_items.iter().find(|i| &i.id == work_item_id)?;
+    let step_id = StepId::new();
+
+    let adr = state.adr_states.get(work_item_id);
+
+    let action: StepAction = match adr.map(|a| &a.phase) {
+        None | Some(AdrPhase::Drafting) => {
+            let executor = cfk_core::routing::resolve(&state.routing, WorkType::AdrDrafting)
+                .ok()?.clone();
+            let accepted_adrs: Vec<_> = state
+                .adrs
+                .iter()
+                .filter(|r| r.status == cfk_core::types::architecture::AdrStatus::Accepted)
+                .map(|r| format!("- {}: {}", r.title, r.content))
+                .collect();
+            let accepted_summary = if accepted_adrs.is_empty() {
+                "None yet.".to_string()
+            } else {
+                accepted_adrs.join("\n")
+            };
+            let prompt = build_prompt(&format!(
+                "Draft an Architecture Decision Record for: {}\n\n\
+                 Existing accepted ADRs:\n{accepted_summary}\n\n\
+                 Follow ADR format: Context, Decision, Consequences.\n\
+                 Submit via `cf_adr_submit` with `title` and `content`.",
+                item.description,
+            ));
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        Some(AdrPhase::PendingReview) => {
+            let content = adr
+                .and_then(|a| a.content.as_deref())
+                .unwrap_or("(content not available)");
+            let title = adr
+                .and_then(|a| a.title.as_deref())
+                .unwrap_or("(untitled)");
+            let executor = cfk_core::routing::resolve(&state.routing, WorkType::AdrReview)
+                .ok()?.clone();
+            let prompt = build_prompt(&format!(
+                "Review this ADR for conflicts with the factory engineering baseline and accepted ADRs:\n\n\
+                 **{title}**\n\n{content}\n\n\
+                 Check for contradictions with:\n\
+                 - Event modeling / event sourcing requirements\n\
+                 - Functional-core / imperative-shell architecture\n\
+                 - Railway-oriented programming for errors\n\
+                 - Semantic types (no raw primitives)\n\
+                 - Strictest-possible linting\n\
+                 - Behavioral tests only (no mocking)\n\
+                 - Atomic Design for UI\n\
+                 - Vertical slice architecture\n\
+                 Return verdict: approved or vetoed with reason.",
+            ));
+            StepAction::GateReview {
+                gate_kind: GateKind::AdrReview,
+                executor,
+                prompt,
+            }
+        }
+        Some(AdrPhase::Accepted | AdrPhase::Rejected) => return None,
+    };
+
+    Some(ReadyStep {
+        step_id,
+        work_item_id: work_item_id.clone(),
+        phase: item.phase,
+        action,
+    })
+}
+
+/// Build the next step for a design-system work item based on its current phase.
+///
+/// Returns `None` if the phase is terminal (`Done`).
+fn design_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep> {
+    let item = state.work_items.iter().find(|i| &i.id == work_item_id)?;
+    let step_id = StepId::new();
+
+    let ds = state.design_states.get(work_item_id);
+
+    let action: StepAction = match ds.map(|d| &d.phase) {
+        None | Some(cfk_core::state_machine::design::DesignPhase::Building) => {
+            let executor = cfk_core::routing::resolve(&state.routing, WorkType::DesignSystemBuild)
+                .ok()?.clone();
+            let inventory_names: Vec<_> = state
+                .design_inventory
+                .iter()
+                .map(|c| format!("- {} ({:?})", c.name, c.kind))
+                .collect();
+            let inventory_summary = if inventory_names.is_empty() {
+                "None yet.".to_string()
+            } else {
+                inventory_names.join("\n")
+            };
+            let prompt = build_prompt(&format!(
+                "Build a design component for: {}\n\n\
+                 Existing inventory:\n{inventory_summary}\n\n\
+                 Specify the Atomic Design level (quark/atom/molecule/organism/template/page),\n\
+                 the component name, and any relevant implementation notes.\n\
+                 Submit via `cf_design_add_component`.",
+                item.description,
+            ));
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        Some(cfk_core::state_machine::design::DesignPhase::Done) => return None,
+    };
+
+    Some(ReadyStep {
+        step_id,
+        work_item_id: work_item_id.clone(),
+        phase: item.phase,
+        action,
+    })
+}
+
 fn build_prompt(text: &str) -> StepPrompt {
     StepPrompt::try_new(text.to_string()).unwrap_or_else(|_| {
         StepPrompt::try_new("Process this work item.".to_string())
@@ -266,6 +432,54 @@ pub fn handle_next_step(
             continue;
         }
         if let Some(step) = review_step(state, &item.id) {
+            return Ok(NextStepResponse::Ready(step));
+        }
+    }
+
+    // 1c. Check in-progress discovery items.
+    for item in &state.work_items {
+        if phase_filter.is_some_and(|p| item.phase != p) {
+            continue;
+        }
+        if item.status != cfk_core::state_machine::work_item::WorkItemStatus::InProgress {
+            continue;
+        }
+        if item.phase != PhaseKind::Discovery {
+            continue;
+        }
+        if let Some(step) = discovery_step(state, &item.id) {
+            return Ok(NextStepResponse::Ready(step));
+        }
+    }
+
+    // 1d. Check in-progress architecture items.
+    for item in &state.work_items {
+        if phase_filter.is_some_and(|p| item.phase != p) {
+            continue;
+        }
+        if item.status != cfk_core::state_machine::work_item::WorkItemStatus::InProgress {
+            continue;
+        }
+        if item.phase != PhaseKind::Architecture {
+            continue;
+        }
+        if let Some(step) = architecture_step(state, &item.id) {
+            return Ok(NextStepResponse::Ready(step));
+        }
+    }
+
+    // 1e. Check in-progress design-system items.
+    for item in &state.work_items {
+        if phase_filter.is_some_and(|p| item.phase != p) {
+            continue;
+        }
+        if item.status != cfk_core::state_machine::work_item::WorkItemStatus::InProgress {
+            continue;
+        }
+        if item.phase != PhaseKind::DesignSystem {
+            continue;
+        }
+        if let Some(step) = design_step(state, &item.id) {
             return Ok(NextStepResponse::Ready(step));
         }
     }

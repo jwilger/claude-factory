@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum GateKind {
     TestReview,
     ImplementationReview,
+    AdrReview,
 }
 
 /// A human-readable explanation of why a gate was vetoed.

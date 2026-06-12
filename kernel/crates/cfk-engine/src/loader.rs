@@ -12,10 +12,15 @@ use crate::{
 };
 use cfk_core::{
     state_machine::{
+        architecture::AdrPhase,
+        design::DesignPhase,
+        discovery::DiscoveryPhase,
         review::{ReviewSlicePhase, ReviewSliceState},
         work_item::WorkItemStatus,
     },
     types::{
+        architecture::{AdrRecord, AdrStatus},
+        design::DesignComponent,
         gate::GateKind,
         tdd::{DevSliceState, TddFrame, TddPhase},
     },
@@ -55,7 +60,7 @@ pub fn load_project_state(root: &Path) -> anyhow::Result<Option<ProjectState>> {
 #[allow(clippy::too_many_lines)]
 pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
     match event {
-        FactoryEvent::ProjectInitialized { .. } => {}
+        FactoryEvent::ProjectInitialized { .. } | FactoryEvent::DesignCrossCheckCompleted { .. } => {}
 
         FactoryEvent::WorkItemAdded { work_item } => {
             state.work_items.push(work_item.clone());
@@ -135,6 +140,8 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
                     GateKind::ImplementationReview => {
                         if verdict.is_approved() { TddPhase::LintCheck } else { TddPhase::Implement }
                     }
+                    // AdrReview verdicts are not TDD events; no TDD phase change.
+                    GateKind::AdrReview => frame.phase.clone(),
                 };
             }
         }
@@ -238,5 +245,79 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             }
             // Work item completion is handled by a separate WorkItemCompleted event.
         }
+
+        // ── Discovery events ─────────────────────────────────────────────
+
+        FactoryEvent::DiscoveryBriefDrafted { work_item_id, brief_content, workflows } => {
+            let disc = state
+                .discovery_states
+                .entry(work_item_id.clone())
+                .or_default();
+            disc.phase = DiscoveryPhase::BriefReady;
+            disc.brief_content = Some(brief_content.clone());
+            disc.workflows.clone_from(workflows);
+        }
+
+        FactoryEvent::DiscoveryApproved { work_item_id } => {
+            if let Some(disc) = state.discovery_states.get_mut(work_item_id) {
+                disc.phase = DiscoveryPhase::Approved;
+            }
+            // Workflow work items are added separately as WorkItemAdded events.
+        }
+
+        // ── Architecture events ──────────────────────────────────────────
+
+        FactoryEvent::AdrDrafted { work_item_id, adr_id, title, content } => {
+            let adr_state = state
+                .adr_states
+                .entry(work_item_id.clone())
+                .or_default();
+            adr_state.phase = AdrPhase::PendingReview;
+            adr_state.adr_id = Some(adr_id.clone());
+            adr_state.title = Some(title.clone());
+            adr_state.content = Some(content.clone());
+            // Add to global ADR registry as proposed.
+            state.adrs.push(AdrRecord {
+                id: adr_id.clone(),
+                work_item_id: work_item_id.clone(),
+                title: title.clone(),
+                content: content.clone(),
+                status: AdrStatus::Proposed,
+            });
+        }
+
+        FactoryEvent::AdrDecided { work_item_id, adr_id, accepted, reason: _ } => {
+            if let Some(adr_state) = state.adr_states.get_mut(work_item_id) {
+                adr_state.phase = if *accepted { AdrPhase::Accepted } else { AdrPhase::Rejected };
+            }
+            // Update status in global ADR registry.
+            if let Some(rec) = state.adrs.iter_mut().find(|r| &r.id == adr_id) {
+                rec.status = if *accepted { AdrStatus::Accepted } else { AdrStatus::Rejected };
+            }
+        }
+
+        // ── Design-system events ─────────────────────────────────────────
+
+        FactoryEvent::DesignComponentAdded {
+            work_item_id,
+            component_id,
+            name,
+            kind,
+            slice_ref,
+        } => {
+            let ds = state
+                .design_states
+                .entry(work_item_id.clone())
+                .or_default();
+            ds.phase = DesignPhase::Done;
+            ds.component_name = Some(name.clone());
+            state.design_inventory.push(DesignComponent {
+                id: component_id.clone(),
+                name: name.clone(),
+                kind: *kind,
+                slice_ref: slice_ref.clone(),
+            });
+        }
+
     }
 }

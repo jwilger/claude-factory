@@ -10,5 +10,8 @@
 pub mod tdd;
 pub mod work_item;
 pub mod review;
+pub mod discovery;
+pub mod architecture;
+pub mod design;
 
 pub use work_item::{WorkItem, WorkItemState, WorkItemError};

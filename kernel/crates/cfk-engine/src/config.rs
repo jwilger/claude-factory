@@ -46,6 +46,16 @@ pub fn default_routing_table() -> RoutingTable {
                 notes: None,
             },
             RoutingEntry {
+                work_type: WorkType::AdrReview,
+                executor: codex("o4-mini", CodexEffort::High),
+                notes: Some("Cross-family ADR review: GPT checks for conflicts from a different perspective.".into()),
+            },
+            RoutingEntry {
+                work_type: WorkType::DesignSystemBuild,
+                executor: claude(ClaudeModel::Sonnet, "design-system-builder"),
+                notes: None,
+            },
+            RoutingEntry {
                 work_type: WorkType::OuterBehavioralTestWriting,
                 executor: claude(ClaudeModel::Sonnet, "test-writer"),
                 notes: None,

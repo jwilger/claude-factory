@@ -10,6 +10,8 @@ pub enum WorkType {
     SocraticDiscovery,
     EventModelAuthoring,
     AdrDrafting,
+    AdrReview,
+    DesignSystemBuild,
     OuterBehavioralTestWriting,
     TestReview,
     NarrowestStepImplementation,
