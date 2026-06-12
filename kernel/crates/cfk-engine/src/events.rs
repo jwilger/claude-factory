@@ -8,6 +8,9 @@
 //! chronological order.
 
 use crate::store::event_export_dir;
+use std::io;
+use std::path::PathBuf;
+use thiserror::Error;
 use cfk_core::{
     state_machine::work_item::WorkItem,
     types::{
@@ -21,6 +24,23 @@ use cfk_core::{
         tdd::{AuthorIdentity, DrillDownDescription, ErrorMessage, ReviewerId, TestCode, TddPhase},
     },
 };
+/// Error returned by event-store operations.
+#[derive(Debug, Error)]
+pub enum EventStoreError {
+    #[error("failed to read event directory {dir}: {source}")]
+    ReadDir { dir: PathBuf, #[source] source: io::Error },
+    #[error("failed to read event file {path}: {source}")]
+    ReadFile { path: PathBuf, #[source] source: io::Error },
+    #[error("failed to parse event file {path}: {source}")]
+    ParseEvent { path: PathBuf, #[source] source: serde_json::Error },
+    #[error("failed to serialize event: {0}")]
+    SerializeEvent(serde_json::Error),
+    #[error("failed to create event directory {dir}: {source}")]
+    CreateDir { dir: PathBuf, #[source] source: io::Error },
+    #[error("failed to write event file {path}: {source}")]
+    WriteFile { path: PathBuf, #[source] source: io::Error },
+}
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -196,12 +216,13 @@ impl EventEnvelope {
 ///
 /// # Errors
 /// Returns an error if any event file cannot be read or parsed.
-pub fn load_events(dir: &Path) -> anyhow::Result<Vec<EventEnvelope>> {
+pub fn load_events(dir: &Path) -> Result<Vec<EventEnvelope>, EventStoreError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|source| EventStoreError::ReadDir { dir: dir.to_path_buf(), source })?
         .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .collect();
@@ -211,10 +232,10 @@ pub fn load_events(dir: &Path) -> anyhow::Result<Vec<EventEnvelope>> {
     let mut events = Vec::with_capacity(entries.len());
     for entry in entries {
         let path = entry.path();
-        let content = std::fs::read_to_string(&path)?;
-        let envelope: EventEnvelope = serde_json::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("failed to parse {}: {}", path.display(), e)
-        })?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|source| EventStoreError::ReadFile { path: path.clone(), source })?;
+        let envelope: EventEnvelope = serde_json::from_str(&content)
+            .map_err(|source| EventStoreError::ParseEvent { path, source })?;
         events.push(envelope);
     }
 
@@ -230,9 +251,10 @@ pub fn append_event(
     project_root: &Path,
     sequence: u64,
     payload: FactoryEvent,
-) -> anyhow::Result<EventEnvelope> {
+) -> Result<EventEnvelope, EventStoreError> {
     let dir = event_export_dir(project_root);
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|source| EventStoreError::CreateDir { dir: dir.clone(), source })?;
 
     let envelope = EventEnvelope {
         id: Uuid::new_v4(),
@@ -242,8 +264,10 @@ pub fn append_event(
     };
 
     let path = dir.join(envelope.filename());
-    let content = serde_json::to_string_pretty(&envelope)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_string_pretty(&envelope)
+        .map_err(EventStoreError::SerializeEvent)?;
+    std::fs::write(&path, content)
+        .map_err(|source| EventStoreError::WriteFile { path, source })?;
 
     Ok(envelope)
 }

@@ -12,6 +12,15 @@ use std::{
 };
 use thiserror::Error;
 
+/// Error returned when `GiteaForge` cannot be constructed from environment variables.
+#[derive(Debug, Error)]
+pub enum ForgeConfigError {
+    #[error("required environment variable {var} is not set")]
+    MissingEnvVar { var: &'static str },
+    #[error("failed to build HTTP client: {0}")]
+    Client(#[from] reqwest::Error),
+}
+
 /// Error type for forge adapter operations.
 #[derive(Debug, Error)]
 pub enum ForgeError {
@@ -198,15 +207,15 @@ impl GiteaForge {
     ///
     /// # Errors
     /// Returns an error if any required environment variable is absent.
-    pub fn from_env() -> anyhow::Result<Arc<Self>> {
+    pub fn from_env() -> Result<Arc<Self>, ForgeConfigError> {
         let base_url = std::env::var("GITEA_URL")
-            .map_err(|_| anyhow::anyhow!("GITEA_URL not set"))?;
+            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_URL" })?;
         let token = std::env::var("GITEA_TOKEN")
-            .map_err(|_| anyhow::anyhow!("GITEA_TOKEN not set"))?;
+            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_TOKEN" })?;
         let owner = std::env::var("GITEA_OWNER")
-            .map_err(|_| anyhow::anyhow!("GITEA_OWNER not set"))?;
+            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_OWNER" })?;
         let repo = std::env::var("GITEA_REPO")
-            .map_err(|_| anyhow::anyhow!("GITEA_REPO not set"))?;
+            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_REPO" })?;
 
         let client = reqwest::Client::builder()
             .user_agent("cfk/1.0")

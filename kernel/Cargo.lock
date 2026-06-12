@@ -137,7 +137,6 @@ dependencies = [
 name = "cfk-engine"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "cfk-core",
  "chrono",

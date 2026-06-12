@@ -5,7 +5,17 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Error returned when the checks configuration cannot be loaded.
+#[derive(Debug, Error)]
+pub enum ChecksError {
+    #[error("failed to read {path}: {source}")]
+    Read { path: PathBuf, #[source] source: std::io::Error },
+    #[error("failed to parse {path}: {source}")]
+    Parse { path: PathBuf, #[source] source: toml::de::Error },
+}
 
 /// One configured check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,12 +55,14 @@ impl ChecksConfig {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
-pub fn load_checks(project_root: &Path) -> anyhow::Result<ChecksConfig> {
+pub fn load_checks(project_root: &Path) -> Result<ChecksConfig, ChecksError> {
     let path = project_root.join(".claude-factory").join("checks.toml");
     if !path.exists() {
         return Ok(ChecksConfig::default());
     }
-    let content = std::fs::read_to_string(&path)?;
-    let cfg: ChecksConfig = toml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|source| ChecksError::Read { path: path.clone(), source })?;
+    let cfg: ChecksConfig = toml::from_str(&content)
+        .map_err(|source| ChecksError::Parse { path, source })?;
     Ok(cfg)
 }

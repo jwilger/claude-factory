@@ -6,7 +6,7 @@
 
 use crate::{
     config::default_routing_table,
-    events::{FactoryEvent, load_events},
+    events::{EventStoreError, FactoryEvent, load_events},
     project::ProjectState,
     store::event_export_dir,
 };
@@ -34,7 +34,7 @@ use std::path::Path;
 ///
 /// # Errors
 /// Returns an error if any event file cannot be read or deserialized.
-pub fn load_project_state(root: &Path) -> anyhow::Result<Option<ProjectState>> {
+pub fn load_project_state(root: &Path) -> Result<Option<ProjectState>, EventStoreError> {
     let dir = event_export_dir(root);
     let envelopes = load_events(&dir)?;
 

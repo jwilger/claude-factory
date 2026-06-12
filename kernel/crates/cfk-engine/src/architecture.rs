@@ -7,12 +7,18 @@
 use cfk_core::types::architecture::{AdrRecord, AdrStatus};
 use std::fmt::Write as _;
 use std::path::Path;
+use thiserror::Error;
+
+/// Error returned when ARCHITECTURE.md cannot be written.
+#[derive(Debug, Error)]
+#[error("failed to write ARCHITECTURE.md: {0}")]
+pub struct ArchitectureError(#[from] std::io::Error);
 
 /// Render and write ARCHITECTURE.md to the product repo root.
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub fn project_architecture_md(root: &Path, adrs: &[AdrRecord]) -> anyhow::Result<()> {
+pub fn project_architecture_md(root: &Path, adrs: &[AdrRecord]) -> Result<(), ArchitectureError> {
     let accepted: Vec<_> = adrs
         .iter()
         .filter(|r| r.status == AdrStatus::Accepted)

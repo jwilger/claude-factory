@@ -14,11 +14,6 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/jwilger/claude-factory"
 
 [workspace.dependencies]
-# Event sourcing
-eventcore = "0.8.0"
-eventcore-sqlite = "0.8.0"
-eventcore-memory = "0.8.0"
-eventcore-macros = "0.8.0"
 
 # MCP server
 rmcp = { version = "1.7.0", features = ["server", "transport-io"] }

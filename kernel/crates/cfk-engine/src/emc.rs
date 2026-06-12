@@ -4,10 +4,22 @@
 //! Only slices from workflows that have a `WorkflowReadinessDeclared` event are returned.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use anyhow::Context as _;
 use serde::Deserialize;
+use thiserror::Error;
+
+/// Error returned when emc model events cannot be read.
+#[derive(Debug, Error)]
+pub enum EmcError {
+    #[error("failed to read emc events directory {dir}: {source}")]
+    ReadDir { dir: PathBuf, #[source] source: io::Error },
+    #[error("failed to read emc event file {path}: {source}")]
+    ReadFile { path: PathBuf, #[source] source: io::Error },
+    #[error("failed to parse emc event file {path}: {source}")]
+    ParseFile { path: PathBuf, #[source] source: serde_json::Error },
+}
 
 /// A slice extracted from a formally-verified emc workflow model.
 #[derive(Debug, Clone)]
@@ -31,14 +43,14 @@ struct EmcEvent {
 ///
 /// # Errors
 /// Returns an error if the model directory cannot be read or any JSON file fails to parse.
-pub fn read_verified_slices(project_root: &Path) -> anyhow::Result<Vec<EmcSlice>> {
+pub fn read_verified_slices(project_root: &Path) -> Result<Vec<EmcSlice>, EmcError> {
     let events_dir = project_root.join("model").join("events").join("v1");
     if !events_dir.exists() {
         return Ok(Vec::new());
     }
 
     let mut entries: Vec<_> = std::fs::read_dir(&events_dir)
-        .with_context(|| format!("reading emc events dir {}", events_dir.display()))?
+        .map_err(|source| EmcError::ReadDir { dir: events_dir.clone(), source })?
         .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.path()
@@ -50,10 +62,11 @@ pub fn read_verified_slices(project_root: &Path) -> anyhow::Result<Vec<EmcSlice>
 
     let mut events: Vec<EmcEvent> = Vec::with_capacity(entries.len());
     for entry in &entries {
-        let raw = std::fs::read_to_string(entry.path())
-            .with_context(|| format!("reading {}", entry.path().display()))?;
+        let path = entry.path();
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|source| EmcError::ReadFile { path: path.clone(), source })?;
         let ev: EmcEvent = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", entry.path().display()))?;
+            .map_err(|source| EmcError::ParseFile { path, source })?;
         events.push(ev);
     }
 

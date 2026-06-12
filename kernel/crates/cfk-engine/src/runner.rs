@@ -3,9 +3,15 @@
 //! The kernel runs all checks itself; agents never self-report pass/fail.
 //! This module executes shell commands and extracts structured results.
 
-use std::path::Path;
+use std::{io, path::Path};
 use std::process::Stdio;
+use thiserror::Error;
 use tokio::process::Command;
+
+/// Error returned when a check cannot be spawned or its output captured.
+#[derive(Debug, Error)]
+#[error("failed to run check: {0}")]
+pub struct RunnerError(#[from] io::Error);
 
 /// The result of running a configured check.
 #[derive(Debug, Clone)]
@@ -25,7 +31,7 @@ const MAX_OUTPUT_BYTES: usize = 65_536;
 /// # Errors
 /// Returns an error if the process cannot be spawned or its output cannot
 /// be captured.
-pub async fn run_check(command: &str, working_dir: &Path) -> anyhow::Result<CheckResult> {
+pub async fn run_check(command: &str, working_dir: &Path) -> Result<CheckResult, RunnerError> {
     let output = Command::new("sh")
         .arg("-c")
         .arg(command)
