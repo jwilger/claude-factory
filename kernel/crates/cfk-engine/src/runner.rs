@@ -45,7 +45,7 @@ pub async fn run_check(command: &str, working_dir: &Path) -> Result<CheckResult,
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
     let full_output = if combined.len() > MAX_OUTPUT_BYTES {
-        format!("{}... [truncated]", &combined[..MAX_OUTPUT_BYTES])
+        format!("{}... [truncated]", &combined[..combined.floor_char_boundary(MAX_OUTPUT_BYTES)])
     } else {
         combined
     };
@@ -96,6 +96,10 @@ pub fn extract_first_error(output: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "test functions use expect for assertion clarity"
+)]
 mod tests {
     use super::*;
 

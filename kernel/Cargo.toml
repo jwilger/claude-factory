@@ -136,12 +136,30 @@ unneeded_field_pattern = "allow"
 unseparated_literal_suffix = "allow"
 # Default numeric fallback (0 as i32) is fine; strong inference makes it non-ambiguous in context
 default_numeric_fallback = "allow"
+# MutexGuard/RwLockWriteGuard drops in async code are intentional — held for the full operation scope
+significant_drop_tightening = "allow"
+# Boundary error conversion with domain-specific messages; original error type is internal
+map_err_ignore = "allow"
+# Intentional catch-all match arms for event handling and test assertions; future variants handled at the emit site
+wildcard_enum_match_arm = "allow"
+# Rust integration test files in tests/ live outside cfg(test) modules by convention
+tests_outside_test_module = "allow"
+# String slicing at floor_char_boundary-computed indices is safe; clippy can't prove it statically
+string_slice = "allow"
+# expect_used = "deny" already enforces documented expect() annotations; this duplicate check adds noise
+unwrap_in_result = "allow"
 # `#[allow]` attributes must use `#[expect]` instead — enforced to catch stale suppression
 allow_attributes = "deny"
 # All lint-suppression attributes require a documented reason
 allow_attributes_without_reason = "deny"
 
 # ── Panic-family lints ────────────────────────────────────────────────────────
-# Currently warn; will be ratcheted to deny in P11 once all violations are fixed.
-expect_used = "warn"
-unwrap_used = "warn"
+# All panic-family lints are denied. Production code must use `ok_or`/`?`/`ok_or_else`.
+# Test modules may use `#[expect(clippy::expect_used, reason = "...")]`.
+expect_used = "deny"
+unwrap_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"

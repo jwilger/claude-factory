@@ -59,7 +59,7 @@ pub enum CommandError {
 impl From<cfk_core::steps::StepError> for CommandError {
     fn from(e: cfk_core::steps::StepError) -> Self {
         match e {
-            cfk_core::steps::StepError::Routing(r) => CommandError::Routing(r),
+            cfk_core::steps::StepError::Routing(r) => Self::Routing(r),
         }
     }
 }

@@ -244,6 +244,11 @@ fn enforce_reviewer_ne_author(
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test helpers use expect/unwrap/expect_err for assertion clarity"
+)]
 mod tests {
     use super::*;
     use crate::types::{

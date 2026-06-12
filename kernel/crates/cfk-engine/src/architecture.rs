@@ -36,7 +36,8 @@ pub fn project_architecture_md(root: &Path, adrs: &[AdrRecord]) -> Result<(), Ar
         out.push_str("## Accepted Decisions\n\n");
         for (i, adr) in accepted.iter().enumerate() {
             let n = i + 1;
-            write!(out, "### ADR-{n:04}: {}\n\n", adr.title).expect("write to String never fails");
+            #[expect(clippy::expect_used, reason = "write! to String uses fmt::Write which is infallible")]
+            write!(out, "### ADR-{n:04}: {}\n\n", adr.title).expect("write to String is infallible");
             out.push_str(&adr.content);
             if !adr.content.ends_with('\n') {
                 out.push('\n');

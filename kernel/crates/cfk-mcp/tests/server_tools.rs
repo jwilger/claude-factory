@@ -1,3 +1,9 @@
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    reason = "integration tests use expect/unwrap for assertion clarity"
+)]
 //! Behavioral integration tests for the cfk-mcp server tool handlers.
 //!
 //! These tests call tool methods directly (no stdio transport). They verify

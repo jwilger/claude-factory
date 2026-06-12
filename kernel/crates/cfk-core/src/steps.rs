@@ -237,6 +237,11 @@ pub fn design_step_action(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test functions use expect/panic for assertion clarity"
+)]
 mod tests {
     use super::*;
     use crate::{

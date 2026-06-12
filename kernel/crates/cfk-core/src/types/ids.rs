@@ -18,10 +18,6 @@ macro_rules! uuid_id {
         impl $name {
             #[must_use]
             pub fn new() -> Self {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "predicate is |_| true — Uuid::new_v4() always satisfies it; this path cannot panic"
-                )]
                 Self::try_new(Uuid::new_v4()).expect("valid UUID")
             }
         }

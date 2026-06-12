@@ -1,3 +1,12 @@
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::redundant_clone,
+    clippy::needless_collect,
+    reason = "engine integration tests use expect/unwrap/panic/collect for assertion clarity"
+)]
 //! Behavioral tests for cfk-engine.
 //!
 //! Tests follow the pattern: given events → when command → then result.
@@ -3105,7 +3114,6 @@ mod m8_concurrency {
 
     /// Lease state and item status survive a full restart via event replay.
     #[test]
-    #[expect(clippy::too_many_lines, reason = "behavioral test verifying lease state and item status survive event-log replay; length reflects the multi-step setup required")]
     fn lease_state_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

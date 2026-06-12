@@ -52,12 +52,10 @@ pub async fn handle_pr_open(
     let item = state.work_items.iter().find(|i| &i.id == work_item_id)
         .ok_or_else(|| ReviewError::NotFound(work_item_id.clone()))?;
 
-    if state.review_states.get(work_item_id)
-        .is_some_and(|r| r.phase != ReviewSlicePhase::WaitingForPr)
+    if let Some(review) = state.review_states.get(work_item_id)
+        && review.phase != ReviewSlicePhase::WaitingForPr
     {
-        return Err(ReviewError::UnexpectedPhase(
-            state.review_states[work_item_id].phase.clone()
-        ));
+        return Err(ReviewError::UnexpectedPhase(review.phase.clone()));
     }
 
     let spec = PrSpec { title, body, head, base };

@@ -403,7 +403,7 @@ any other `cf_*` tool. Returns the new project ID.")]
 
         let project_id = cfk_core::types::ids::ProjectId::new();
         let routing = default_routing_table();
-        let project_state = ProjectState::new(project_id.clone(), root.clone(), routing);
+        let mut project_state = ProjectState::new(project_id.clone(), root.clone(), routing);
 
         let seq = guard.next_seq();
         let envelope = append_event(
@@ -413,7 +413,6 @@ any other `cf_*` tool. Returns the new project ID.")]
         )
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let mut project_state = project_state;
         apply_event(&mut project_state, &envelope.payload);
         guard.project = Some(project_state);
 
@@ -641,7 +640,6 @@ For other phases: any JSON value is accepted as evidence.")]
                         .transpose()?;
                     SubmissionPayload::Implementation { drill_down }
                 }
-                Some(_) => SubmissionPayload::Generic(params.result.clone()),
                 None if item_work_type == Some(WorkType::PrCommentTriage) => {
                     let raw = params.result.get("reply")
                         .and_then(serde_json::Value::as_str)
@@ -652,7 +650,7 @@ For other phases: any JSON value is accepted as evidence.")]
                         .map_err(|_| McpError::invalid_params("reply cannot be empty", None))?;
                     SubmissionPayload::TriageReply { reply }
                 }
-                None => SubmissionPayload::Generic(params.result.clone()),
+                Some(_) | None => SubmissionPayload::Generic(params.result.clone()),
             }
         };
 
@@ -822,8 +820,10 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
             (GateKind::TestReview, GateVerdict::Vetoed { .. }) => TddPhase::WriteTest,
             (GateKind::ImplementationReview, GateVerdict::Approved) => TddPhase::LintCheck,
             (GateKind::ImplementationReview, GateVerdict::Vetoed { .. }) => TddPhase::Implement,
-            // AdrReview handled above; unreachable here.
-            (GateKind::AdrReview, _) => unreachable!("ADR gates return early"),
+            // AdrReview exits early above; this arm is a compile-time exhaustiveness placeholder.
+            (GateKind::AdrReview, _) => {
+                return Ok(tool_error("unexpected ADR gate kind in TDD gate path".to_string()));
+            }
         };
 
         let new_phase_label = tdd_phase_label(&new_phase);
@@ -1052,8 +1052,10 @@ Provide `work_item_id` to advance the TDD state machine based on the result.")]
             "passed": result.passed,
             "first_error": result.first_error,
         });
-        if let Some(phase) = tdd_phase {
-            resp["advanced_tdd_phase_to"] = serde_json::Value::String(phase.to_string());
+        if let Some(phase) = tdd_phase
+            && let Some(obj) = resp.as_object_mut()
+        {
+            obj.insert("advanced_tdd_phase_to".to_string(), serde_json::Value::String(phase.to_string()));
         }
 
         content_json(&resp)
@@ -1163,7 +1165,7 @@ Returns a summary of CI status and any new triage items created.")]
                 FactoryEvent::ReviewCommentTriageCreated { triage_item_id, comment_id, comment_body, .. } => {
                     // Create a PrCommentTriage work item in the backlog.
                     let body_str = comment_body.to_string();
-                    let body_preview = &body_str[..body_str.len().min(120)];
+                    let body_preview = &body_str[..body_str.floor_char_boundary(120)];
                     let triage_item = cfk_core::state_machine::work_item::WorkItem::new(
                         triage_item_id.clone(),
                         cfk_core::types::phase::PhaseKind::Review,

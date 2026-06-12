@@ -82,8 +82,7 @@ impl PollScript {
     /// Returns `ForgeError::PollScriptExhausted` when called more times than
     /// there are scripted results.
     pub fn advance(&mut self) -> Result<PrPollResult, ForgeError> {
-        if self.index < self.results.len() {
-            let r = self.results[self.index].clone();
+        if let Some(r) = self.results.get(self.index).cloned() {
             self.index += 1;
             Ok(r)
         } else {
@@ -253,9 +252,9 @@ impl ForgeAdapter for GiteaForge {
             .json()
             .await?;
 
-        let number = json["number"].as_u64()
+        let number = json.get("number").and_then(serde_json::Value::as_u64)
             .ok_or(ForgeError::MalformedResponse { field: "number" })?;
-        let url = json["html_url"].as_str()
+        let url = json.get("html_url").and_then(serde_json::Value::as_str)
             .ok_or(ForgeError::MalformedResponse { field: "html_url" })?
             .to_string();
 
@@ -282,10 +281,10 @@ impl ForgeAdapter for GiteaForge {
             .await?;
 
         let approved = reviews_resp.as_array()
-            .is_some_and(|arr| arr.iter().any(|r| r["state"].as_str() == Some("APPROVED")));
+            .is_some_and(|arr| arr.iter().any(|r| r.get("state").and_then(serde_json::Value::as_str) == Some("APPROVED")));
 
         // Map Gitea's commit status to `CiStatus` via the statuses endpoint.
-        let sha = pr_resp["head"]["sha"].as_str()
+        let sha = pr_resp.get("head").and_then(|h| h.get("sha")).and_then(serde_json::Value::as_str)
             .ok_or(ForgeError::MalformedResponse { field: "head.sha" })?;
         let statuses_resp: serde_json::Value = self.client
             .get(self.api_url(&format!("/commits/{sha}/statuses")))
@@ -297,7 +296,7 @@ impl ForgeAdapter for GiteaForge {
 
         let ci_status = statuses_resp.as_array()
             .and_then(|arr| arr.first())
-            .and_then(|s| s["state"].as_str())
+            .and_then(|s| s.get("state").and_then(serde_json::Value::as_str))
             .map_or(CiStatus::Unknown, |s| match s {
                 "success" => CiStatus::Passing,
                 "failure" | "error" => CiStatus::Failing,
@@ -317,9 +316,9 @@ impl ForgeAdapter for GiteaForge {
         let comments = comments_resp.as_array().map_or(Vec::new(), |arr| {
             arr.iter().filter_map(|c| {
                 Some(PrComment {
-                    id: cfk_core::types::forge::CommentId::try_new(c["id"].as_u64()?.to_string()).ok()?,
-                    body: cfk_core::types::forge::CommentBody::try_new(c["body"].as_str()?.to_string()).ok()?,
-                    author: c["user"]["login"].as_str()?.to_string(),
+                    id: cfk_core::types::forge::CommentId::try_new(c.get("id")?.as_u64()?.to_string()).ok()?,
+                    body: cfk_core::types::forge::CommentBody::try_new(c.get("body")?.as_str()?.to_string()).ok()?,
+                    author: c.get("user")?.get("login")?.as_str()?.to_string(),
                 })
             }).collect()
         });
@@ -338,7 +337,7 @@ impl ForgeAdapter for GiteaForge {
             .json()
             .await?;
 
-        Ok(json["id"].as_u64()
+        Ok(json.get("id").and_then(serde_json::Value::as_u64)
             .ok_or(ForgeError::MalformedResponse { field: "id" })?
             .to_string())
     }

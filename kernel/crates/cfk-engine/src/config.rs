@@ -14,6 +14,7 @@ use cfk_core::types::routing::{
 /// deliberate design: the reviewer must not share the author's blind spots.
 #[must_use]
 pub fn default_routing_table() -> RoutingTable {
+    #[expect(clippy::expect_used, reason = "caller passes hardcoded string literals that are always valid")]
     fn claude(model: ClaudeModel, agent: &str) -> ExecutorSpec {
         ExecutorSpec::Claude {
             model,
@@ -21,6 +22,7 @@ pub fn default_routing_table() -> RoutingTable {
         }
     }
 
+    #[expect(clippy::expect_used, reason = "caller passes hardcoded string literals that are always valid")]
     fn codex(model: &str, effort: CodexEffort) -> ExecutorSpec {
         ExecutorSpec::Codex {
             model: CodexModel::try_new(model.to_owned()).expect("hardcoded model name"),

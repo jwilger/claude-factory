@@ -23,9 +23,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let project_root = std::env::args().nth(1).map_or_else(
-        || std::env::current_dir().expect("current directory must be accessible"),
-        std::path::PathBuf::from,
-    );
+        || std::env::current_dir().context("current directory must be accessible"),
+        |s| Ok(std::path::PathBuf::from(s)),
+    )?;
 
     tracing::info!("cfk starting, project_root={}", project_root.display());
 
