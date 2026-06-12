@@ -213,6 +213,112 @@ re-running the command — the kernel replays events and returns the same step.
 
 ---
 
+## Multi-session concurrency — session-per-phase tabs
+
+Running a separate terminal tab per phase is the recommended pattern for
+production use. Each tab opens the product repo in Claude Code and runs a
+scoped loop:
+
+**Tab 1 — Discovery / overall dispatch**
+```
+/claude-factory:work
+```
+Dispatches across all phases in priority order. Use this when you want one
+session to drive whatever is most urgent.
+
+**Tab 2 — Development only**
+```
+/claude-factory:develop
+```
+Equivalent to `/claude-factory:work --phase development`. Stays in the dev TDD
+loop and ignores discovery, architecture, etc.
+
+**Tab 3 — Review only**
+```
+/claude-factory:review
+```
+Polls PRs and triages comments. Safe to leave running continuously — the loop
+idles when there is nothing to triage.
+
+**Tab 4 — Architecture**
+```
+/claude-factory:architect
+```
+
+**Tab 5 — Design system**
+```
+/claude-factory:design
+```
+
+### Why this is safe
+
+The kernel's lease protocol prevents two sessions from working on the same item:
+
+1. Before executing a non-dev step, the conductor calls `cf_claim`.
+2. `cf_claim` reads the current `WorkItemStatus`; if it is `InProgress` (another
+   session already holds a lease), it returns an error — the conductor stops and
+   reports the conflict rather than double-executing.
+3. When a session finishes or crashes, `cf_release` (or a manual call on
+   restart) returns the item to `Ready` so any session can pick it up.
+4. The entire lease history is event-sourced — replaying events from
+   `.claude-factory/events/v1/` always restores the exact lease state.
+
+### Recovering after a crash
+
+If a session crashes mid-step:
+
+1. Open a new Claude Code tab in the same product repo.
+2. Run the same phase command (e.g. `/claude-factory:develop`).
+3. The kernel replays events; the crashed item is still `InProgress` under
+   the old lease.
+4. Call `cf_release <work_item_id>` to return it to `Ready`.
+5. The conductor loop will immediately pick it up and resume from the last
+   completed step.
+
+### PR shepherd as a scheduled routine
+
+The review phase is the lowest-risk candidate for a dark (unattended) loop
+because it is entirely driven by forge API state — no code changes, no
+human decisions beyond comment triage.
+
+To run the PR shepherd on a schedule (e.g. every 15 minutes):
+
+```bash
+# In the product repo, run once to install the cron:
+/schedule "Run /claude-factory:review in $(pwd)" --interval 15m
+```
+
+The scheduled routine calls `cf_pr_poll` on each active PR work item and
+creates triage work items for new comments. You review the triage items in
+your next interactive session, or leave a development session open to handle
+them continuously.
+
+**Note:** the PR shepherd routine is read-only with respect to code — it only
+posts comments and merges when all CI checks and human approvals are recorded.
+The kernel enforces the merge gate; the scheduled routine cannot bypass it.
+
+---
+
+## HTTP mode for cfk and emc
+
+Both cfk and emc support an HTTP/bearer-token mode in addition to stdio. HTTP
+mode enables a single kernel process to be shared across multiple simultaneous
+Claude Code sessions without each session spawning its own process.
+
+**Current recommendation (M8):** stdio mode is sufficient for session-per-phase
+tabs because each tab runs its own cfk process and the event log on disk (JSON
+files in `.claude-factory/events/v1/`) is the shared-state layer. File system
+locks are sufficient at M8 throughput.
+
+**When to consider HTTP mode:**
+- More than ~8 simultaneous sessions in the same product repo.
+- Cloud-hosted sessions where the product repo is not locally mounted.
+- Shared CI environments that need a persistent kernel process.
+
+See `docs/decisions/0008-http-mode-evaluation.md` for the full ADR.
+
+---
+
 ## Exit criterion for M6
 
 The walking skeleton is complete when:
@@ -224,3 +330,18 @@ The walking skeleton is complete when:
 3. ✓ `/claude-factory:work` command routes phase-specific submissions to the
    correct kernel tools and claims non-dev items before executing.
 4. ✓ This runbook documents the full traversal.
+
+## Exit criterion for M8
+
+Concurrency graduation is complete when:
+
+1. ✓ Kernel behavioral tests prove lease contention is handled correctly:
+   second claim rejected, release re-enables claim, two sessions on different
+   items coexist, next_step idles when all items leased, lease state survives
+   restart (`m8_concurrency` module, 5 tests, all green).
+2. ✓ This runbook documents session-per-phase tabs, crash recovery, PR shepherd
+   scheduling, and the HTTP mode decision.
+3. ✓ `docs/decisions/0008-http-mode-evaluation.md` records the stdio-first
+   decision and the conditions under which HTTP mode becomes appropriate.
+4. ✓ Statusline configuration shows live factory dashboard (active WIP count
+   and phase summary) via `cf_status`.

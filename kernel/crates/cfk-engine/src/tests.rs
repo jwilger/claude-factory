@@ -2908,3 +2908,249 @@ mod m6_walking_skeleton {
         assert!(matches!(disc_resp, NextStepResponse::Ready(_)), "discovery still ready after restart");
     }
 }
+
+mod m8_concurrency {
+    use crate::{
+        commands::{handle_claim, handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::work_item::{WorkItem, WorkItemStatus, validate_claim},
+        types::{
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+            phase::PhaseKind,
+            routing::WorkType,
+        },
+    };
+    use chrono::Utc;
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    fn test_project(root: &std::path::Path, seq: &mut u64) -> ProjectState {
+        let project_id = ProjectId::new();
+        let mut state =
+            ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        append(root, seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+        state
+    }
+
+    fn seed_ready_dev_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Development,
+            WorkType::OuterBehavioralTestWriting,
+            "Implement feature".to_string(),
+        );
+        let wid = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        wid
+    }
+
+    fn grant_lease(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+        wid: &WorkItemId,
+        identity: &str,
+    ) -> LeaseId {
+        let lease = Lease {
+            id: LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: SessionIdentity::try_new(identity.to_string()).unwrap(),
+            granted_at: Utc::now(),
+            expires_at: None,
+        };
+        let lid = lease.id.clone();
+        append(root, seq, FactoryEvent::LeaseGranted { lease }, state);
+        lid
+    }
+
+    /// A second session cannot claim an item that is already `InProgress`.
+    #[test]
+    fn claim_rejected_when_item_already_leased() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_ready_dev_item(root, &mut state, &mut seq);
+
+        // Session A claims the item.
+        grant_lease(root, &mut state, &mut seq, &wid, "session-a");
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid).unwrap().status,
+            WorkItemStatus::InProgress,
+        );
+
+        // Session B attempts to claim — `validate_claim` must reject it.
+        let item = state.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert!(
+            validate_claim(item).is_err(),
+            "InProgress item must not be claimable by a second session",
+        );
+
+        // handle_claim also returns an error.
+        assert!(
+            handle_claim(&state, &wid, "session-b").is_err(),
+            "handle_claim must reject an already-leased item",
+        );
+    }
+
+    /// After a `LeaseReleased` event the item returns to `Ready` and can be
+    /// re-claimed by any session.
+    #[test]
+    fn claim_succeeds_after_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_ready_dev_item(root, &mut state, &mut seq);
+
+        let lid = grant_lease(root, &mut state, &mut seq, &wid, "session-a");
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid).unwrap().status,
+            WorkItemStatus::InProgress,
+        );
+
+        // Session A releases the lease.
+        append(
+            root,
+            &mut seq,
+            FactoryEvent::LeaseReleased { lease_id: lid, work_item_id: wid.clone() },
+            &mut state,
+        );
+
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid).unwrap().status,
+            WorkItemStatus::Ready,
+            "item must be Ready after lease release",
+        );
+        assert!(
+            state.work_items.iter().find(|i| i.id == wid).unwrap().active_lease.is_none(),
+            "active_lease must be cleared after release",
+        );
+
+        // Session B can now claim it.
+        assert!(
+            handle_claim(&state, &wid, "session-b").is_ok(),
+            "item must be claimable again after release",
+        );
+    }
+
+    /// Two sessions can hold leases on different work items simultaneously.
+    #[test]
+    fn two_sessions_hold_leases_on_different_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid_a = seed_ready_dev_item(root, &mut state, &mut seq);
+        let wid_b = seed_ready_dev_item(root, &mut state, &mut seq);
+
+        grant_lease(root, &mut state, &mut seq, &wid_a, "session-a");
+        grant_lease(root, &mut state, &mut seq, &wid_b, "session-b");
+
+        assert_eq!(state.leases.len(), 2, "both leases must coexist in state");
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid_a).unwrap().status,
+            WorkItemStatus::InProgress,
+        );
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid_b).unwrap().status,
+            WorkItemStatus::InProgress,
+        );
+    }
+
+    /// `handle_next_step` returns `Idle` when all ready items are already
+    /// `InProgress` under another session's lease.
+    #[test]
+    fn next_step_returns_idle_when_all_items_leased() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid = seed_ready_dev_item(root, &mut state, &mut seq);
+
+        grant_lease(root, &mut state, &mut seq, &wid, "session-a");
+
+        // No Ready items remain — the scheduler must see Idle.
+        let resp = handle_next_step(&state, None).unwrap();
+        assert!(
+            matches!(resp, NextStepResponse::Idle(_)),
+            "next_step must be Idle when all items are leased",
+        );
+    }
+
+    /// Lease state and item status survive a full restart via event replay.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn lease_state_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+        let wid_a = seed_ready_dev_item(root, &mut state, &mut seq);
+        let wid_b = seed_ready_dev_item(root, &mut state, &mut seq);
+
+        // Lease A granted, lease B granted, then B released.
+        let lid_a = grant_lease(root, &mut state, &mut seq, &wid_a, "session-a");
+        let lid_b = grant_lease(root, &mut state, &mut seq, &wid_b, "session-b");
+        append(
+            root,
+            &mut seq,
+            FactoryEvent::LeaseReleased { lease_id: lid_b, work_item_id: wid_b.clone() },
+            &mut state,
+        );
+
+        // Pre-replay assertions.
+        assert_eq!(state.leases.len(), 1, "only lease A remains");
+        assert_eq!(state.leases[0].id, lid_a);
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid_a).unwrap().status,
+            WorkItemStatus::InProgress,
+        );
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == wid_b).unwrap().status,
+            WorkItemStatus::Ready,
+            "B must be Ready after its lease was released",
+        );
+
+        // Replay from disk.
+        let replayed = load_project_state(root).unwrap().unwrap();
+
+        assert_eq!(replayed.leases.len(), 1, "replay: only lease A survives");
+        assert_eq!(
+            replayed.work_items.iter().find(|i| i.id == wid_a).unwrap().status,
+            WorkItemStatus::InProgress,
+            "replay: A still InProgress",
+        );
+        assert_eq!(
+            replayed.work_items.iter().find(|i| i.id == wid_b).unwrap().status,
+            WorkItemStatus::Ready,
+            "replay: B back to Ready after release",
+        );
+
+        // After replay, B is the only ready item — next_step returns it.
+        let resp = handle_next_step(&replayed, None).unwrap();
+        assert!(
+            matches!(resp, NextStepResponse::Ready(_)),
+            "replayed state: wid_b is ready for next session",
+        );
+    }
+}
