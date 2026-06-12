@@ -566,6 +566,7 @@ mod m2_full_slice {
         apply_event(state, &env.payload);
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn full_slice_lifecycle_with_veto_and_drilldown() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -817,7 +818,7 @@ mod m2_full_slice {
         append(root, &mut seq, FactoryEvent::TddSliceDone { work_item_id: wid.clone() }, &mut state);
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
 
-        let item = state.work_items.iter().find(|i| &i.id == &wid).expect("item");
+        let item = state.work_items.iter().find(|i| i.id == wid).expect("item");
         assert_eq!(item.status, WorkItemStatus::Done, "work item must reach Done");
 
         // handle_next_step should now return Idle (no more ready work).
@@ -834,6 +835,7 @@ mod emc_ingestion {
     use crate::emc::read_verified_slices;
     use std::fs;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn write_emc_event(dir: &std::path::Path, filename: &str, payload: serde_json::Value) {
         let content = serde_json::to_string_pretty(&payload).unwrap();
         fs::write(dir.join(filename), content).unwrap();
@@ -1475,6 +1477,7 @@ mod m4_review_lifecycle {
         apply_event(state, &env.payload);
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn full_review_lifecycle_with_planted_comment_and_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2510,6 +2513,7 @@ mod m5_exit_criterion {
     /// M5 exit criterion: each of the three new phases (Discovery, Architecture,
     /// Design-system) runs individually on toy product data, with restart
     /// durability verified for each.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn all_three_phases_run_individually_on_toy_product() {
         let dir = tempfile::tempdir().unwrap();
@@ -2603,10 +2607,10 @@ mod m5_exit_criterion {
         assert!(matches!(resp, NextStepResponse::Ready(ref s) if matches!(s.action, StepAction::SpawnAgent { .. })));
 
         // Agent submits draft.
-        let adr_id = AdrId::new();
+        let adr_record_id = AdrId::new();
         append(root, &mut seq, FactoryEvent::AdrDrafted {
             work_item_id: adr_wid.clone(),
-            adr_id: adr_id.clone(),
+            adr_id: adr_record_id.clone(),
             title: "Use in-memory store for widgets".to_string(),
             content: "Context: toy product.\nDecision: in-memory.\nConsequences: simple.".to_string(),
         }, &mut state);
@@ -2622,7 +2626,7 @@ mod m5_exit_criterion {
         // Reviewer approves.
         append(root, &mut seq, FactoryEvent::AdrDecided {
             work_item_id: adr_wid.clone(),
-            adr_id: adr_id.clone(),
+            adr_id: adr_record_id.clone(),
             accepted: true,
             reason: None,
         }, &mut state);
@@ -2681,5 +2685,226 @@ mod m5_exit_criterion {
             3, // discovery + architecture + design = 3 done items
             "all three phases completed",
         );
+    }
+}
+
+// ── M6: Walking skeleton — overlapping WIP across phases ────────────────────
+
+#[cfg(test)]
+mod m6_walking_skeleton {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::{
+            discovery::DiscoveryPhase,
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+            tdd::TddPhase,
+        },
+    };
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).expect("append");
+        apply_event(state, &env.payload);
+    }
+
+    fn test_project(root: &std::path::Path, seq: &mut u64) -> ProjectState {
+        let project_id = ProjectId::new();
+        let mut state =
+            ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        append(root, seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+        state
+    }
+
+    fn make_lease(wid: WorkItemId, identity: &str) -> Lease {
+        Lease {
+            id: LeaseId::new(),
+            work_item_id: wid,
+            session_identity: SessionIdentity::try_new(identity.to_string()).unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        }
+    }
+
+    /// Seed a dev item that is `InProgress` (TDD started, `WriteTest` phase).
+    fn seed_dev_item_in_progress(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Development,
+            WorkType::OuterBehavioralTestWriting,
+            "Implement add-widget slice.".to_string(),
+        );
+        let wid = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        append(root, seq, FactoryEvent::LeaseGranted { lease: make_lease(wid.clone(), "alice") }, state);
+        append(root, seq, FactoryEvent::TddSliceStarted {
+            work_item_id: wid.clone(),
+            author_identity: "alice".to_string(),
+        }, state);
+        wid
+    }
+
+    /// Seed a discovery item that is `InProgress` (claimed, `Dialogue` phase).
+    fn seed_discovery_item_in_progress(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Discovery,
+            WorkType::SocraticDiscovery,
+            "Discover the inventory management product.".to_string(),
+        );
+        let wid = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        append(root, seq, FactoryEvent::LeaseGranted { lease: make_lease(wid.clone(), "bob") }, state);
+        wid
+    }
+
+    #[test]
+    fn dev_takes_priority_over_discovery_when_no_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        let dev_wid = seed_dev_item_in_progress(root, &mut state, &mut seq);
+        seed_discovery_item_in_progress(root, &mut state, &mut seq);
+
+        // Without a filter, dev phase has highest priority.
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert_eq!(step.work_item_id, dev_wid, "dev item should be returned first");
+        assert_eq!(step.phase, PhaseKind::Development);
+        assert!(matches!(step.action, StepAction::SpawnAgent { .. }));
+    }
+
+    #[test]
+    fn phase_filter_scopes_to_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        seed_dev_item_in_progress(root, &mut state, &mut seq);
+        let disc_wid = seed_discovery_item_in_progress(root, &mut state, &mut seq);
+
+        // With Discovery filter, the discovery item is returned despite dev having priority globally.
+        let resp = handle_next_step(&state, Some(PhaseKind::Discovery)).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert_eq!(step.work_item_id, disc_wid, "discovery filter must return discovery item");
+        assert_eq!(step.phase, PhaseKind::Discovery);
+        assert!(matches!(step.action, StepAction::SpawnAgent { .. }));
+    }
+
+    #[test]
+    fn phase_filter_scopes_to_development() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        let dev_wid = seed_dev_item_in_progress(root, &mut state, &mut seq);
+        seed_discovery_item_in_progress(root, &mut state, &mut seq);
+
+        let resp = handle_next_step(&state, Some(PhaseKind::Development)).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready") };
+        assert_eq!(step.work_item_id, dev_wid);
+        assert_eq!(step.phase, PhaseKind::Development);
+    }
+
+    #[test]
+    fn discovery_still_has_work_after_dev_item_completes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        let dev_wid = seed_dev_item_in_progress(root, &mut state, &mut seq);
+        let disc_wid = seed_discovery_item_in_progress(root, &mut state, &mut seq);
+
+        // Complete the dev item.
+        append(root, &mut seq, FactoryEvent::TddSliceDone { work_item_id: dev_wid.clone() }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: dev_wid.clone() }, &mut state);
+
+        assert_eq!(
+            state.work_items.iter().find(|i| i.id == dev_wid).unwrap().status,
+            WorkItemStatus::Done,
+        );
+
+        // Discovery item still has a step available.
+        let resp = handle_next_step(&state, None).unwrap();
+        let NextStepResponse::Ready(step) = resp else { panic!("expected Ready after dev done") };
+        assert_eq!(step.work_item_id, disc_wid);
+        assert_eq!(step.phase, PhaseKind::Discovery);
+    }
+
+    #[test]
+    fn both_phase_states_survive_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut seq = 0;
+        let mut state = test_project(root, &mut seq);
+
+        let dev_wid = seed_dev_item_in_progress(root, &mut state, &mut seq);
+        let disc_wid = seed_discovery_item_in_progress(root, &mut state, &mut seq);
+
+        // Advance discovery to BriefReady.
+        append(root, &mut seq, FactoryEvent::DiscoveryBriefDrafted {
+            work_item_id: disc_wid.clone(),
+            brief_content: "Product brief content.".to_string(),
+            workflows: vec!["add-widget".to_string()],
+        }, &mut state);
+
+        assert_eq!(
+            state.discovery_states.get(&disc_wid).map(|d| d.phase.clone()),
+            Some(DiscoveryPhase::BriefReady),
+        );
+        assert_eq!(
+            state.dev_states.get(&dev_wid).and_then(|d| d.current_phase()),
+            Some(&TddPhase::WriteTest),
+        );
+
+        // Replay — both states must be restored.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        assert_eq!(
+            replayed.discovery_states.get(&disc_wid).map(|d| d.phase.clone()),
+            Some(DiscoveryPhase::BriefReady),
+            "discovery BriefReady survives restart",
+        );
+        assert_eq!(
+            replayed.dev_states.get(&dev_wid).and_then(|d| d.current_phase()),
+            Some(&TddPhase::WriteTest),
+            "dev WriteTest phase survives restart",
+        );
+
+        // Phase filter still works on replayed state.
+        let dev_resp = handle_next_step(&replayed, Some(PhaseKind::Development)).unwrap();
+        assert!(matches!(dev_resp, NextStepResponse::Ready(_)), "dev still ready after restart");
+
+        let disc_resp = handle_next_step(&replayed, Some(PhaseKind::Discovery)).unwrap();
+        assert!(matches!(disc_resp, NextStepResponse::Ready(_)), "discovery still ready after restart");
     }
 }
