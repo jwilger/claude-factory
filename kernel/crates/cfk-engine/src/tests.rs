@@ -3159,3 +3159,89 @@ mod m8_concurrency {
         );
     }
 }
+
+// ── P4 routing-error tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod routing_error_surfaces {
+    use crate::{
+        commands::{CommandError, handle_next_step},
+        events::{FactoryEvent, append_event},
+        loader::apply_event,
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::work_item::{WorkItem, WorkItemStatus},
+        types::{
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+            phase::PhaseKind,
+            routing::{RoutingTable, WorkType},
+            tdd::TddPhase,
+        },
+    };
+    use chrono::Utc;
+
+    /// A routing table with NO entries — every resolve call returns Err.
+    fn empty_routing() -> RoutingTable {
+        RoutingTable::default()
+    }
+
+    #[test]
+    fn missing_route_for_tdd_write_test_returns_routing_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        let wid = WorkItemId::new();
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id, root.to_path_buf(), empty_routing());
+
+        // Add and claim a dev item so it ends up InProgress / WriteTest phase.
+        let item = WorkItem::new(
+            wid.clone(),
+            PhaseKind::Development,
+            WorkType::OuterBehavioralTestWriting,
+            "some slice description".to_string(),
+        );
+        let ev1 = append_event(root, 1, FactoryEvent::WorkItemAdded { work_item: item })
+            .expect("append");
+        apply_event(&mut state, &ev1.payload);
+
+        let identity = SessionIdentity::try_new("session-abc".to_string()).expect("identity");
+        let lease = Lease {
+            id: LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: identity,
+            granted_at: Utc::now(),
+            expires_at: None,
+        };
+        let ev2 = append_event(root, 2, FactoryEvent::LeaseGranted { lease: lease.clone() })
+            .expect("append");
+        apply_event(&mut state, &ev2.payload);
+
+        let ev3 = append_event(
+            root,
+            3,
+            FactoryEvent::TddSliceStarted {
+                work_item_id: wid.clone(),
+                author_identity: "session-abc".to_string(),
+            },
+        )
+        .expect("append");
+        apply_event(&mut state, &ev3.payload);
+
+        // Confirm state is InProgress + WriteTest.
+        let wi = state.work_items.iter().find(|i| i.id == wid).expect("item");
+        assert_eq!(wi.status, WorkItemStatus::InProgress);
+        let dev = state.dev_states.get(&wid).expect("dev state");
+        assert_eq!(dev.current_phase(), Some(&TddPhase::WriteTest));
+
+        // With an empty routing table, handle_next_step must return Routing error.
+        let err = handle_next_step(&state, None)
+            .expect_err("should fail with routing error");
+        assert!(
+            matches!(err, CommandError::Routing(_)),
+            "expected CommandError::Routing, got: {err:?}",
+        );
+    }
+}

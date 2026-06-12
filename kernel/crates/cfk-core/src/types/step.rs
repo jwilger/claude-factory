@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[nutype(
     sanitize(trim),
     validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)
+    derive(Debug, Display, Clone, PartialEq, Eq, Serialize, Deserialize)
 )]
 pub struct StepPrompt(String);
 
