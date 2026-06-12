@@ -408,7 +408,7 @@ impl CfkServer {
     #[tool(description = "\
 Initialize `.claude-factory/` in a product repo. Must be called once before \
 any other `cf_*` tool. Returns the new project ID.")]
-    async fn cf_init(
+    pub async fn cf_init(
         &self,
         Parameters(params): Parameters<InitParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -449,7 +449,7 @@ any other `cf_*` tool. Returns the new project ID.")]
     #[tool(description = "\
 Return a compact dashboard of work-item counts per phase. \
 Shows ready / in_progress / blocked / done for each phase.")]
-    async fn cf_status(
+    pub async fn cf_status(
         &self,
         Parameters(_params): Parameters<PhaseFilterParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -486,7 +486,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
 `idle`. When `ready`, `action.type` is one of: `spawn_agent`, `run_check`, \
 `gate_review`. When `action.type` is `run_check`, call `cf_run_check`. When \
 `action.type` is `gate_review`, run the reviewer agent then call `cf_gate`.")]
-    async fn cf_next_step(
+    pub async fn cf_next_step(
         &self,
         Parameters(params): Parameters<NextStepParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -543,7 +543,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
 Claim a work item for this session. Returns a `lease_id` and `granted_at` \
 timestamp. The conductor must hold the lease while executing the step and \
 release it on completion or failure.")]
-    async fn cf_claim(
+    pub async fn cf_claim(
         &self,
         Parameters(params): Parameters<ClaimParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -574,7 +574,7 @@ release it on completion or failure.")]
     #[tool(description = "\
 Release the lease on a work item (e.g. on session failure or abort). \
 The item returns to `Ready` status and can be claimed again.")]
-    async fn cf_release(
+    pub async fn cf_release(
         &self,
         Parameters(params): Parameters<WorkItemIdParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -619,7 +619,7 @@ For `WriteTest` phase: `result` must be `{\"test_content\": \"<code>\"}`.\n\
 For `Implement` phase: `result` may include `{\"drill_down_description\": \"<desc>\"}`\n\
 if the error requires a tighter unit test; omit or set to null otherwise.\n\
 For other phases: any JSON value is accepted as evidence.")]
-    async fn cf_submit(
+    pub async fn cf_submit(
         &self,
         Parameters(params): Parameters<SubmitParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -782,7 +782,7 @@ The reviewer identity must differ from the work item's claiming session. \
 For TDD gates: when vetoed, the cycle loops back; when approved, it advances. \
 For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects it. \
 `reason` is required when vetoed.")]
-    async fn cf_gate(
+    pub async fn cf_gate(
         &self,
         Parameters(params): Parameters<GateParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -923,7 +923,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
 
     #[tool(description = "\
 List all work items in the backlog, optionally filtered by phase.")]
-    async fn cf_backlog(
+    pub async fn cf_backlog(
         &self,
         Parameters(params): Parameters<PhaseFilterParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -952,7 +952,7 @@ Add a work item to the backlog. \
 | `outer_behavioral_test_writing` | `test_review` | \
 `narrowest_step_implementation` | `implementation_review` | \
 `mechanical_transform` | `pr_comment_triage` | `research`.")]
-    async fn cf_backlog_add(
+    pub async fn cf_backlog_add(
         &self,
         Parameters(params): Parameters<BacklogAddParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -986,7 +986,7 @@ Add a work item to the backlog. \
     }
 
     #[tool(description = "Show the current routing table (work type → executor mapping).")]
-    async fn cf_route(
+    pub async fn cf_route(
         &self,
         Parameters(_params): Parameters<PhaseFilterParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1007,7 +1007,7 @@ Reads `model/events/v1/` under the product repo, finds all `SliceAdded` events \
 whose workflow has a `WorkflowReadinessDeclared` event, and creates a development \
 work item for each new slice (idempotent — already-ingested slugs are skipped). \
 Returns counts of ingested and skipped slices.")]
-    async fn cf_ingest_slices(
+    pub async fn cf_ingest_slices(
         &self,
         Parameters(params): Parameters<IngestSlicesParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1075,7 +1075,7 @@ Run a configured deterministic check (tests, linter, build) and record the \
 result as evidence. Agents never self-report pass/fail — the kernel always \
 runs checks itself.\n\n\
 Provide `work_item_id` to advance the TDD state machine based on the result.")]
-    async fn cf_run_check(
+    pub async fn cf_run_check(
         &self,
         Parameters(params): Parameters<RunCheckParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1145,7 +1145,7 @@ Provide `work_item_id` to advance the TDD state machine based on the result.")]
 Open a pull request on the forge for a review-phase slice. \
 Returns the PR number and URL. `head` is the source branch; `base` is the \
 target branch (usually `main`).")]
-    async fn cf_pr_open(
+    pub async fn cf_pr_open(
         &self,
         Parameters(params): Parameters<PrOpenParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1221,7 +1221,7 @@ target branch (usually `main`).")]
 Poll the forge for a review-phase PR: CI status, review approvals, and new \
 comments. New comments produce `PrCommentTriage` work items. \
 Returns a summary of CI status and any new triage items created.")]
-    async fn cf_pr_poll(
+    pub async fn cf_pr_poll(
         &self,
         Parameters(params): Parameters<PrPollParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1279,7 +1279,7 @@ Returns a summary of CI status and any new triage items created.")]
     #[tool(description = "\
 Merge the pull request for a review-phase slice. Only valid when the slice is \
 in `all_green` state (CI passing + approved). Marks the slice as done.")]
-    async fn cf_pr_merge(
+    pub async fn cf_pr_merge(
         &self,
         Parameters(params): Parameters<PrMergeParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1312,7 +1312,7 @@ in `all_green` state (CI passing + approved). Marks the slice as done.")]
 Submit a discovery brief and workflow list (called by the discovery agent). \
 `brief_content` is the product brief; `workflows` is the list of workflow \
 names to queue for event modeling on human approval.")]
-    async fn cf_discovery_submit(
+    pub async fn cf_discovery_submit(
         &self,
         Parameters(params): Parameters<DiscoverySubmitParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1351,7 +1351,7 @@ names to queue for event modeling on human approval.")]
 Approve or reject a discovery brief (human gate). If approved, all submitted \
 workflows are queued as event-modeling work items and the discovery work item \
 is completed. If rejected, the discovery dialogue resets for a re-run.")]
-    async fn cf_discovery_approve(
+    pub async fn cf_discovery_approve(
         &self,
         Parameters(params): Parameters<DiscoveryApproveParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1417,7 +1417,7 @@ is completed. If rejected, the discovery dialogue resets for a re-run.")]
 Submit an ADR draft (called by the architect agent). `title` is a short \
 decision title; `content` follows Context / Decision / Consequences format. \
 Returns the assigned ADR ID. After submission the ADR enters review gate.")]
-    async fn cf_adr_submit(
+    pub async fn cf_adr_submit(
         &self,
         Parameters(params): Parameters<AdrSubmitParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1462,7 +1462,7 @@ Returns the assigned ADR ID. After submission the ADR enters review gate.")]
 Add a design component to the Atomic Design inventory (called by the \
 design-system agent). Marks the work item as done. \
 `kind`: `quark` | `atom` | `molecule` | `organism` | `template` | `page`.")]
-    async fn cf_design_add_component(
+    pub async fn cf_design_add_component(
         &self,
         Parameters(params): Parameters<DesignAddComponentParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1521,7 +1521,7 @@ Run the design-system cross-check: for each named workflow, create a \
 `design_system_build` work item for any component not yet in the inventory. \
 The cross-check is deterministic — it only generates items for gaps. \
 Returns the IDs of any new work items created.")]
-    async fn cf_design_cross_check(
+    pub async fn cf_design_cross_check(
         &self,
         Parameters(params): Parameters<DesignCrossCheckParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1573,7 +1573,7 @@ Return aggregated per-work-type metrics: veto rates and average token costs. \
 Use this to justify routing table defaults and identify work types where the \
 current executor is under-performing (high veto rate = consider a stronger \
 model or a different provider). Returns entries sorted by veto rate descending.")]
-    async fn cf_metrics(
+    pub async fn cf_metrics(
         &self,
     ) -> Result<CallToolResult, McpError> {
         let guard = self.state.read().await;
@@ -1591,7 +1591,7 @@ every non-gate step completion (outcome: completed). \
 Provide `tokens_used` when the agent reports it. \
 The kernel accumulates these outcomes to compute per-work-type veto rates \
 and average token costs, which justify and guide routing table tuning.")]
-    async fn cf_record_outcome(
+    pub async fn cf_record_outcome(
         &self,
         Parameters(params): Parameters<RecordOutcomeParams>,
     ) -> Result<CallToolResult, McpError> {

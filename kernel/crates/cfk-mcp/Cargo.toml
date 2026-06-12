@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "cfk_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cfk"
 path = "src/main.rs"
@@ -30,3 +34,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3.27.0"

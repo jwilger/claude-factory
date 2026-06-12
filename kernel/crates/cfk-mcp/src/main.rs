@@ -8,11 +8,9 @@
 //!
 //! If `project-root` is omitted, the current working directory is used.
 
-mod server;
-
 use anyhow::Context;
+use cfk_mcp::server::CfkServer;
 use rmcp::ServiceExt;
-use server::CfkServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
