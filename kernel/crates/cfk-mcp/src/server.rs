@@ -13,7 +13,7 @@ use cfk_core::{
         metrics::StepOutcome,
         phase::PhaseKind,
         routing::WorkType,
-        forge::{CommentId, PrNumber, PrUrl},
+        forge::{CommentBody, PrNumber, PrUrl},
         step::CheckName,
         tdd::{AuthorIdentity, DrillDownDescription, ErrorMessage, ReviewerId, TestCode, TddPhase},
     },
@@ -21,7 +21,7 @@ use cfk_core::{
 use cfk_engine::{
     architecture::project_architecture_md,
     checks::load_checks,
-    commands::{CommandError, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, validate_gate_verdict},
+    commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, validate_gate_verdict},
     config::default_routing_table,
     emc::read_verified_slices,
     events::{FactoryEvent, append_event},
@@ -603,9 +603,8 @@ For other phases: any JSON value is accepted as evidence.")]
     ) -> Result<CallToolResult, McpError> {
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
-        // Extract state into owned values to release the immutable borrow before emit.
-        let (current_tdd_phase, item_status, item_work_type, author_identity, frame_depth,
-             triage_review_info) = {
+        // Parse JSON → SubmissionPayload at the boundary (read lock).
+        let payload = {
             let guard = self.state.read().await;
             let proj = guard.project.as_ref()
                 .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
@@ -614,144 +613,93 @@ For other phases: any JSON value is accepted as evidence.")]
                 return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
             }
 
-            let item = proj.work_items.iter().find(|i| i.id == work_item_id);
-            let status = item.map(|i| i.status);
-            let work_type = item.map(|i| i.work_type);
-
-            let phase = proj.dev_states.get(&work_item_id)
+            let current_tdd_phase = proj.dev_states.get(&work_item_id)
                 .and_then(|d| d.current_phase()).cloned();
+            let item_work_type = proj.work_items.iter()
+                .find(|i| i.id == work_item_id)
+                .map(|i| i.work_type);
 
-            let author = proj.leases.iter()
-                .find(|l| l.work_item_id == work_item_id)
-                .map_or_else(|| "unknown".to_string(), |l| l.session_identity.to_string());
-
-            let depth = proj.dev_states.get(&work_item_id)
-                .and_then(|d| d.current_frame()).map_or(0, |f| f.depth);
-
-            // If this is a triage item, find its parent review work item + comment_id.
-            let triage_info = proj.review_states.iter().find_map(|(review_wid, rs)| {
-                rs.pending_triage.iter().find(|(_, tid)| tid == &work_item_id)
-                    .map(|(cid, _)| {
-                        let pr_number = rs.pr_number.unwrap_or(0);
-                        (review_wid.clone(), cid.clone(), pr_number)
-                    })
-            });
-
-            (phase, status, work_type, author, depth, triage_info)
+            match current_tdd_phase {
+                Some(TddPhase::WriteTest) => {
+                    let raw = params.result.get("test_content")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| McpError::invalid_params(
+                            "WriteTest submission must include {\"test_content\": \"...\"}",
+                            None,
+                        ))?.to_string();
+                    let test_content = TestCode::try_new(raw)
+                        .map_err(|_| McpError::invalid_params("test_content cannot be empty", None))?;
+                    SubmissionPayload::Test { test_content }
+                }
+                Some(TddPhase::Implement) => {
+                    let drill_down = params.result.get("drill_down_description")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|s| DrillDownDescription::try_new(s.to_string())
+                            .map_err(|_| McpError::invalid_params(
+                                "drill_down_description cannot be empty", None,
+                            )))
+                        .transpose()?;
+                    SubmissionPayload::Implementation { drill_down }
+                }
+                Some(_) => SubmissionPayload::Generic(params.result.clone()),
+                None if item_work_type == Some(WorkType::PrCommentTriage) => {
+                    let raw = params.result.get("reply")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| params.result.as_str())
+                        .unwrap_or("(no reply provided)")
+                        .to_string();
+                    let reply = CommentBody::try_new(raw)
+                        .map_err(|_| McpError::invalid_params("reply cannot be empty", None))?;
+                    SubmissionPayload::TriageReply { reply }
+                }
+                None => SubmissionPayload::Generic(params.result.clone()),
+            }
         };
 
-        let mut guard = self.state.write().await;
+        // Delegate state-machine logic to the engine (pure, read-only state).
+        let (events, outcome) = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            handle_submission(proj, work_item_id.clone(), payload)
+                .map_err(|ref e| command_error(e))?
+        };
 
-        match current_tdd_phase {
-            Some(TddPhase::WriteTest) => {
-                let test_content = params
-                    .result.get("test_content")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| McpError::invalid_params(
-                        "WriteTest submission must include {\"test_content\": \"...\"}",
-                        None,
-                    ))?.to_string();
-
-                let test_content_typed = TestCode::try_new(test_content.clone())
-                    .map_err(|_| McpError::invalid_params("test_content cannot be empty", None))?;
-                let author_identity_typed = AuthorIdentity::try_new(author_identity.clone())
-                    .map_err(|_| McpError::internal_error("Invalid author identity".to_string(), None))?;
-                guard.emit(FactoryEvent::TddTestSubmitted {
-                    work_item_id,
-                    frame_depth,
-                    test_content: test_content_typed,
-                    author_identity: author_identity_typed,
-                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-                content_json(&serde_json::json!({
-                    "work_item_id": params.work_item_id,
-                    "advanced_to": "test_review_gate",
-                    "test_content_length": test_content.len(),
-                }))
-            }
-
-            Some(TddPhase::Implement) => {
-                let drill_down = params.result.get("drill_down_description")
-                    .and_then(serde_json::Value::as_str).map(String::from);
-
-                if let Some(desc) = drill_down {
-                    let child_description = DrillDownDescription::try_new(desc.clone())
-                        .map_err(|_| McpError::invalid_params("drill_down_description cannot be empty", None))?;
-                    guard.emit(FactoryEvent::TddDrillDownPushed {
-                        work_item_id,
-                        child_description,
-                        child_depth: frame_depth + 1,
-                    }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-                    return content_json(&serde_json::json!({
-                        "work_item_id": params.work_item_id,
-                        "advanced_to": "write_test",
-                        "drill_down_depth": frame_depth + 1,
-                        "description": desc,
-                    }));
-                }
-
-                guard.emit(FactoryEvent::TddPhaseAdvanced {
-                    work_item_id,
-                    frame_depth,
-                    new_phase: TddPhase::CheckProgress,
-                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-                content_json(&serde_json::json!({
-                    "work_item_id": params.work_item_id,
-                    "advanced_to": "check_progress",
-                }))
-            }
-
-            Some(other) => {
-                content_json(&serde_json::json!({
-                    "work_item_id": params.work_item_id,
-                    "current_tdd_phase": tdd_phase_label(&other),
-                    "note": "Submission acknowledged; use cf_gate for gate verdicts.",
-                }))
-            }
-
-            None => {
-                if item_status != Some(WorkItemStatus::InProgress) {
-                    return Ok(tool_error(format!(
-                        "work item {} is not in progress",
-                        params.work_item_id
-                    )));
-                }
-
-                // If this is a PrCommentTriage item, post the comment to the forge
-                // before completing the work item.
-                if item_work_type == Some(WorkType::PrCommentTriage)
-                    && let Some((review_wid, comment_id, pr_number)) = triage_review_info
-                {
-                    let reply_body = params.result
-                        .get("reply")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_else(|| {
-                            params.result.as_str().unwrap_or("(no reply provided)")
-                        })
-                        .to_string();
-
-                    self.forge
-                        .post_comment(pr_number, &reply_body)
-                        .await
-                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-                    let comment_id_typed = CommentId::try_new(comment_id)
-                        .map_err(|_| McpError::internal_error("Invalid comment id".to_string(), None))?;
-                    guard.emit(FactoryEvent::ReviewCommentPosted {
-                        review_work_item_id: review_wid,
-                        comment_id: comment_id_typed,
-                        triage_item_id: work_item_id.clone(),
-                    }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                }
-
-                guard.emit(FactoryEvent::WorkItemCompleted { work_item_id })
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-                content_json(&serde_json::json!({ "completed": params.work_item_id }))
-            }
+        // Perform forge side-effects before committing events.
+        if let SubmissionOutcome::CommentQueued { pr_number, ref reply } = outcome {
+            self.forge
+                .post_comment(pr_number, reply)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
+
+        // Append events.
+        let mut guard = self.state.write().await;
+        for event in events {
+            guard.emit(event).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+
+        // Serialize outcome.
+        let response = match outcome {
+            SubmissionOutcome::AdvancedTo(ref phase) => serde_json::json!({
+                "work_item_id": params.work_item_id,
+                "advanced_to": tdd_phase_label(phase),
+            }),
+            SubmissionOutcome::DrillDownPushed { depth } => serde_json::json!({
+                "work_item_id": params.work_item_id,
+                "advanced_to": "write_test",
+                "drill_down_depth": depth,
+            }),
+            SubmissionOutcome::Acknowledged => serde_json::json!({
+                "work_item_id": params.work_item_id,
+                "status": "acknowledged",
+            }),
+            SubmissionOutcome::CommentQueued { .. } => serde_json::json!({
+                "completed": params.work_item_id,
+            }),
+        };
+
+        content_json(&response)
     }
 
     #[tool(description = "\

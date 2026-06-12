@@ -45,6 +45,15 @@ pub enum CommandError {
 
     #[error("reviewer identity matches the author — a different session must review")]
     ReviewerIsAuthor,
+
+    #[error("work item {0:?} is not in progress")]
+    NotInProgress(WorkItemId),
+
+    #[error("triage context not found for work item {0:?}")]
+    TriageContextNotFound(WorkItemId),
+
+    #[error("invalid submission input: {0}")]
+    InvalidInput(String),
 }
 
 impl From<cfk_core::steps::StepError> for CommandError {
@@ -456,4 +465,158 @@ pub fn validate_gate_verdict(
         return Err(CommandError::ReviewerIsAuthor);
     }
     Ok(())
+}
+
+// ── Submission ────────────────────────────────────────────────────────────────
+
+/// The payload for a `cf_submit` call, resolved at the MCP JSON boundary.
+pub enum SubmissionPayload {
+    /// Test code submitted during the `WriteTest` TDD phase.
+    Test {
+        test_content: cfk_core::types::tdd::TestCode,
+    },
+    /// Implementation result; optionally with a drill-down into a narrower unit test.
+    Implementation {
+        drill_down: Option<cfk_core::types::tdd::DrillDownDescription>,
+    },
+    /// A reply to a PR comment from a triage work item.
+    TriageReply {
+        reply: cfk_core::types::forge::CommentBody,
+    },
+    /// Generic submission evidence for non-TDD phases.
+    Generic(serde_json::Value),
+}
+
+/// The outcome returned from `handle_submission` for the MCP layer to act on.
+pub enum SubmissionOutcome {
+    /// The TDD state machine advanced to this phase.
+    AdvancedTo(TddPhase),
+    /// A drill-down sub-frame was pushed; item re-enters `WriteTest` at greater depth.
+    DrillDownPushed { depth: u32 },
+    /// Submission acknowledged; item completed or gate-pending.
+    Acknowledged,
+    /// A triage reply must be posted to the forge before the caller appends events.
+    CommentQueued { pr_number: u64, reply: String },
+}
+
+/// Handle a `cf_submit` call — emit the appropriate events for the current TDD
+/// phase or work item type.
+///
+/// Returns the events to append and an outcome the caller uses to perform any
+/// required forge effects (e.g. posting a PR comment for triage items).
+///
+/// # Errors
+/// Returns `CommandError` if the work item is missing, not in progress, or the
+/// triage context cannot be resolved.
+pub fn handle_submission(
+    state: &ProjectState,
+    work_item_id: WorkItemId,
+    payload: SubmissionPayload,
+) -> Result<(Vec<crate::events::FactoryEvent>, SubmissionOutcome), CommandError> {
+    use cfk_core::state_machine::work_item::WorkItemStatus;
+    use crate::events::FactoryEvent;
+
+    let item_status = state
+        .work_items
+        .iter()
+        .find(|i| i.id == work_item_id)
+        .map(|i| i.status)
+        .ok_or_else(|| CommandError::NotFound(work_item_id.clone()))?;
+
+    let current_tdd_phase = state
+        .dev_states
+        .get(&work_item_id)
+        .and_then(|d| d.current_phase())
+        .cloned();
+
+    let frame_depth = state
+        .dev_states
+        .get(&work_item_id)
+        .and_then(|d| d.current_frame())
+        .map_or(0, |f| f.depth);
+
+    let author_str = state
+        .leases
+        .iter()
+        .find(|l| l.work_item_id == work_item_id)
+        .map_or_else(|| "unknown".to_string(), |l| l.session_identity.to_string());
+
+    match (current_tdd_phase, payload) {
+        (Some(TddPhase::WriteTest), SubmissionPayload::Test { test_content }) => {
+            let author_identity = cfk_core::types::tdd::AuthorIdentity::try_new(author_str.clone())
+                .map_err(|_| CommandError::InvalidInput(format!("invalid author identity: {author_str}")))?;
+            let events = vec![FactoryEvent::TddTestSubmitted {
+                work_item_id,
+                frame_depth,
+                test_content,
+                author_identity,
+            }];
+            Ok((events, SubmissionOutcome::AdvancedTo(TddPhase::TestReviewGate)))
+        }
+
+        (Some(TddPhase::Implement), SubmissionPayload::Implementation { drill_down: Some(child_description) }) => {
+            let child_depth = frame_depth + 1;
+            let events = vec![FactoryEvent::TddDrillDownPushed {
+                work_item_id,
+                child_description,
+                child_depth,
+            }];
+            Ok((events, SubmissionOutcome::DrillDownPushed { depth: child_depth }))
+        }
+
+        (Some(TddPhase::Implement), SubmissionPayload::Implementation { drill_down: None }) => {
+            let events = vec![FactoryEvent::TddPhaseAdvanced {
+                work_item_id,
+                frame_depth,
+                new_phase: TddPhase::CheckProgress,
+            }];
+            Ok((events, SubmissionOutcome::Acknowledged))
+        }
+
+        (Some(_), _) => {
+            // Gate phase or other — acknowledge without advancing
+            Ok((vec![], SubmissionOutcome::Acknowledged))
+        }
+
+        (None, SubmissionPayload::TriageReply { reply }) => {
+            if item_status != WorkItemStatus::InProgress {
+                return Err(CommandError::NotInProgress(work_item_id));
+            }
+
+            let triage_info = state.review_states.iter().find_map(|(review_wid, rs)| {
+                rs.pending_triage
+                    .iter()
+                    .find(|(_, tid)| tid == &work_item_id)
+                    .map(|(cid, _)| (review_wid.clone(), cid.clone(), rs.pr_number))
+            });
+
+            let (review_wid, cid_raw, pr_number_opt) = triage_info
+                .ok_or_else(|| CommandError::TriageContextNotFound(work_item_id.clone()))?;
+
+            let pr_number = pr_number_opt.unwrap_or(0);
+            let reply_str = reply.into_inner();
+
+            let comment_id = cfk_core::types::forge::CommentId::try_new(cid_raw.clone())
+                .map_err(|_| CommandError::InvalidInput(format!("invalid comment id: {cid_raw}")))?;
+
+            let events = vec![
+                FactoryEvent::ReviewCommentPosted {
+                    review_work_item_id: review_wid,
+                    comment_id,
+                    triage_item_id: work_item_id.clone(),
+                },
+                FactoryEvent::WorkItemCompleted { work_item_id },
+            ];
+
+            Ok((events, SubmissionOutcome::CommentQueued { pr_number, reply: reply_str }))
+        }
+
+        (None, _) => {
+            if item_status != WorkItemStatus::InProgress {
+                return Err(CommandError::NotInProgress(work_item_id));
+            }
+            let events = vec![FactoryEvent::WorkItemCompleted { work_item_id }];
+            Ok((events, SubmissionOutcome::Acknowledged))
+        }
+    }
 }
