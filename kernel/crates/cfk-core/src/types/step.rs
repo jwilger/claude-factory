@@ -43,6 +43,14 @@ pub enum StepAction {
     AskHuman {
         question: HumanQuestion,
     },
+    /// Conductor must open a PR with the given prompt (title/body details inside).
+    OpenPr {
+        prompt: StepPrompt,
+    },
+    /// Conductor must call `cf_pr_poll` to check CI, reviews, and new comments.
+    RunPrPoll,
+    /// PR is all-green and approved; conductor must call `cf_pr_merge`.
+    MergePr,
 }
 
 /// The name of a deterministic check configured in the project.

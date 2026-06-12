@@ -12,3 +12,4 @@ pub mod gate;
 pub mod lease;
 pub mod evidence;
 pub mod tdd;
+pub mod forge;

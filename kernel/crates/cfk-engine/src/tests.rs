@@ -1021,6 +1021,670 @@ mod emc_ingestion {
     }
 }
 
+// ── Review phase behavioral tests ────────────────────────────────────────────
+
+#[cfg(test)]
+mod review_slice {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        forge::{MemoryForge, PollScript},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+        review::{handle_pr_merge, handle_pr_open, handle_pr_poll},
+    };
+    use cfk_core::{
+        state_machine::{
+            review::ReviewSlicePhase,
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            forge::{CiStatus, PrComment, PrPollResult},
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+    use std::sync::Arc;
+
+    fn test_project(root: &std::path::Path) -> ProjectState {
+        ProjectState::new(ProjectId::new(), root.to_path_buf(), default_routing_table())
+    }
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).unwrap();
+        apply_event(state, &env.payload);
+    }
+
+    fn seed_review_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+    ) -> WorkItemId {
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Review,
+            WorkType::PrCommentTriage, // will be overridden by the review flow
+            "Open PR for add-command slice".to_string(),
+        );
+        let id = item.id.clone();
+        append(root, seq, FactoryEvent::WorkItemAdded { work_item: item }, state);
+        id
+    }
+
+    fn claim_review_item(
+        root: &std::path::Path,
+        state: &mut ProjectState,
+        seq: &mut u64,
+        wid: &WorkItemId,
+        session: &str,
+    ) {
+        let lease = Lease {
+            id: LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: SessionIdentity::try_new(session.to_string()).expect("session"),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, seq, FactoryEvent::LeaseGranted { lease }, state);
+    }
+
+    // ── test: in-progress review item with no state → OpenPr step ────────────
+
+    #[test]
+    fn review_item_without_state_gets_open_pr_step() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let resp = handle_next_step(&state, None).expect("next_step");
+        match resp {
+            NextStepResponse::Ready(step) => {
+                assert_eq!(step.work_item_id, wid);
+                assert!(
+                    matches!(step.action, StepAction::OpenPr { .. }),
+                    "expected OpenPr, got {:?}", step.action
+                );
+            }
+            NextStepResponse::Idle(_) => panic!("expected Ready"),
+        }
+    }
+
+    // ── test: after PR opened → PrOpen phase → RunPrPoll step ────────────────
+
+    #[tokio::test]
+    async fn after_pr_open_next_step_is_run_pr_poll() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let events = handle_pr_open(
+            &state, &wid,
+            "Add command".to_string(), "Implements add.".to_string(),
+            "feature/add-command".to_string(), "main".to_string(),
+            &(forge.clone() as Arc<dyn crate::forge::ForgeAdapter>),
+        ).await.expect("open pr");
+
+        for event in events {
+            append(root, &mut seq, event, &mut state);
+        }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen)
+        );
+        assert_eq!(state.review_states.get(&wid).and_then(|r| r.pr_number), Some(1));
+
+        let resp = handle_next_step(&state, None).expect("next_step");
+        match resp {
+            NextStepResponse::Ready(step) => {
+                assert!(matches!(step.action, StepAction::RunPrPoll), "expected RunPrPoll");
+            }
+            NextStepResponse::Idle(_) => panic!("expected Ready for RunPrPoll"),
+        }
+    }
+
+    // ── test: poll with comment → CommentTriagePending + triage items ─────────
+
+    #[tokio::test]
+    async fn poll_with_new_comment_creates_triage_item() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Open PR (PR number 1).
+        let events = handle_pr_open(
+            &state, &wid,
+            "title".to_string(), "body".to_string(),
+            "head".to_string(), "main".to_string(),
+            &forge_dyn,
+        ).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // Set poll script: one comment, then all-green.
+        forge.set_poll_script(1, PollScript::new(vec![
+            PrPollResult {
+                ci_status: CiStatus::Pending,
+                approved: false,
+                comments: vec![PrComment {
+                    id: "c1".to_string(),
+                    body: "Please add a doc comment.".to_string(),
+                    author: "reviewer".to_string(),
+                }],
+            },
+        ]));
+
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.unwrap();
+
+        // Should produce a ReviewCommentTriageCreated event.
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], FactoryEvent::ReviewCommentTriageCreated { .. }));
+
+        for event in &events { append(root, &mut seq, event.clone(), &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::CommentTriagePending)
+        );
+        assert_eq!(state.review_states.get(&wid).map(|r| r.pending_triage.len()), Some(1));
+    }
+
+    // ── test: after triage comment posted → back to PrOpen ───────────────────
+
+    #[tokio::test]
+    async fn after_triage_posted_phase_returns_to_pr_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Open PR.
+        let events = handle_pr_open(
+            &state, &wid,
+            "title".to_string(), "body".to_string(),
+            "head".to_string(), "main".to_string(),
+            &forge_dyn,
+        ).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // Poll: one comment.
+        forge.set_poll_script(1, PollScript::new(vec![
+            PrPollResult {
+                ci_status: CiStatus::Pending,
+                approved: false,
+                comments: vec![PrComment {
+                    id: "c1".to_string(),
+                    body: "LGTM but rename the variable.".to_string(),
+                    author: "alice".to_string(),
+                }],
+            },
+        ]));
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.unwrap();
+        let triage_item_id = if let FactoryEvent::ReviewCommentTriageCreated { triage_item_id, .. } = &events[0] {
+            triage_item_id.clone()
+        } else { panic!("expected ReviewCommentTriageCreated") };
+
+        // Also add the triage work item.
+        let triage_item = WorkItem::new(
+            triage_item_id.clone(),
+            PhaseKind::Review,
+            WorkType::PrCommentTriage,
+            "Comment c1: LGTM but rename the variable.".to_string(),
+        );
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: triage_item }, &mut state);
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::CommentTriagePending)
+        );
+
+        // Post the review comment (triage done).
+        append(root, &mut seq, FactoryEvent::ReviewCommentPosted {
+            review_work_item_id: wid.clone(),
+            comment_id: "c1".to_string(),
+            triage_item_id: triage_item_id.clone(),
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: triage_item_id }, &mut state);
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen),
+            "after all triage done, should return to PrOpen"
+        );
+    }
+
+    // ── test: all-green poll → AllGreen → MergePr step ───────────────────────
+
+    #[tokio::test]
+    async fn all_green_poll_produces_merge_pr_step() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Open PR.
+        let events = handle_pr_open(
+            &state, &wid,
+            "title".to_string(), "body".to_string(),
+            "head".to_string(), "main".to_string(),
+            &forge_dyn,
+        ).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // Poll: all-green (no comments).
+        forge.set_poll_script(1, PollScript::new(vec![
+            PrPollResult {
+                ci_status: CiStatus::Passing,
+                approved: true,
+                comments: vec![],
+            },
+        ]));
+
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], FactoryEvent::ReviewAllGreen { .. }));
+
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::AllGreen)
+        );
+
+        // cf_next_step should now return MergePr.
+        let resp = handle_next_step(&state, None).expect("next_step");
+        match resp {
+            NextStepResponse::Ready(step) => {
+                assert!(matches!(step.action, StepAction::MergePr), "expected MergePr");
+            }
+            NextStepResponse::Idle(_) => panic!("expected Ready for MergePr"),
+        }
+    }
+
+    // ── test: merge → Merged → work item Done ────────────────────────────────
+
+    #[tokio::test]
+    async fn merge_pr_marks_work_item_done() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mut state = test_project(root);
+        let mut seq = 0u64;
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Open PR.
+        let events = handle_pr_open(
+            &state, &wid, "t".to_string(), "b".to_string(),
+            "h".to_string(), "main".to_string(), &forge_dyn,
+        ).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // Poll: all-green.
+        forge.set_poll_script(1, PollScript::new(vec![
+            PrPollResult { ci_status: CiStatus::Passing, approved: true, comments: vec![] }
+        ]));
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // Merge.
+        let events = handle_pr_merge(&state, &wid, &forge_dyn).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert!(forge.is_merged(1), "PR should be merged on the forge");
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::Merged)
+        );
+        let item = state.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(item.status, WorkItemStatus::Done, "work item must be Done after merge");
+    }
+
+    // ── test: restart durability for review phase ─────────────────────────────
+
+    #[tokio::test]
+    async fn review_state_survives_restart_via_event_replay() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        let mut seq = 0u64;
+
+        append(root, &mut seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+
+        let wid = seed_review_item(root, &mut state, &mut seq);
+        claim_review_item(root, &mut state, &mut seq, &wid, "conductor");
+
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Open PR.
+        let events = handle_pr_open(
+            &state, &wid, "title".to_string(), "body".to_string(),
+            "feature/add".to_string(), "main".to_string(), &forge_dyn,
+        ).await.unwrap();
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        // ── Simulate restart ──
+        drop(state);
+        let state = load_project_state(root).expect("load").expect("Some");
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen),
+            "review phase must survive restart"
+        );
+        assert_eq!(
+            state.review_states.get(&wid).and_then(|r| r.pr_number),
+            Some(1),
+            "pr_number must survive restart"
+        );
+
+        // After restart, next_step should still return RunPrPoll.
+        let resp = handle_next_step(&state, None).expect("next_step");
+        match resp {
+            NextStepResponse::Ready(step) => {
+                assert!(matches!(step.action, StepAction::RunPrPoll));
+            }
+            NextStepResponse::Idle(_) => panic!("expected Ready after restart"),
+        }
+    }
+}
+
+// ── M4 exit-criterion test ────────────────────────────────────────────────────
+// Full review lifecycle: claim → OpenPr → RunPrPoll (planted comment) →
+// triage item → post reply → RunPrPoll (all-green) → MergePr → Done.
+// Includes a simulated restart mid-review to verify event-replay durability.
+
+#[cfg(test)]
+mod m4_review_lifecycle {
+    use crate::{
+        commands::{handle_next_step, NextStepResponse},
+        config::default_routing_table,
+        events::{FactoryEvent, append_event},
+        forge::{MemoryForge, PollScript},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+        review::{handle_pr_merge, handle_pr_open, handle_pr_poll},
+    };
+    use cfk_core::{
+        state_machine::{
+            review::ReviewSlicePhase,
+            work_item::{WorkItem, WorkItemStatus},
+        },
+        types::{
+            forge::{CiStatus, PrComment, PrPollResult},
+            ids::{LeaseId, ProjectId, WorkItemId},
+            lease::{Lease, SessionIdentity},
+            phase::PhaseKind,
+            routing::WorkType,
+            step::StepAction,
+        },
+    };
+    use std::sync::Arc;
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).unwrap();
+        apply_event(state, &env.payload);
+    }
+
+    #[tokio::test]
+    async fn full_review_lifecycle_with_planted_comment_and_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(
+            project_id.clone(), root.to_path_buf(), default_routing_table()
+        );
+        let mut seq = 0u64;
+
+        append(root, &mut seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+
+        // ── Seed review work item ─────────────────────────────────────────────
+        let item = WorkItem::new(
+            WorkItemId::new(),
+            PhaseKind::Review,
+            WorkType::PrCommentTriage,
+            "Open PR for add-command slice in toy-product".to_string(),
+        );
+        let wid = item.id.clone();
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: item }, &mut state);
+
+        // ── Claim ─────────────────────────────────────────────────────────────
+        let lease = Lease {
+            id: LeaseId::new(),
+            work_item_id: wid.clone(),
+            session_identity: SessionIdentity::try_new("conductor-1".to_string()).unwrap(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+        };
+        append(root, &mut seq, FactoryEvent::LeaseGranted { lease }, &mut state);
+
+        // ── cf_next_step → OpenPr ─────────────────────────────────────────────
+        let step = match handle_next_step(&state, None).expect("next_step") {
+            NextStepResponse::Ready(s) => s,
+            NextStepResponse::Idle(_) => panic!("expected Ready for OpenPr"),
+        };
+        assert!(matches!(step.action, StepAction::OpenPr { .. }), "first step must be OpenPr");
+
+        // ── Forge: open PR (memory forge assigns PR #1) ───────────────────────
+        let forge = MemoryForge::new();
+        let forge_dyn = forge.clone() as Arc<dyn crate::forge::ForgeAdapter>;
+
+        // Pre-load poll script:
+        //   first poll: CI pending + one planted review comment
+        //   second poll: CI passing, approved, no new comments
+        forge.set_poll_script(1, PollScript::new(vec![
+            PrPollResult {
+                ci_status: CiStatus::Pending,
+                approved: false,
+                comments: vec![PrComment {
+                    id: "planted-1".to_string(),
+                    body: "Please add inline docs to the public function.".to_string(),
+                    author: "human-reviewer".to_string(),
+                }],
+            },
+            PrPollResult {
+                ci_status: CiStatus::Passing,
+                approved: true,
+                comments: vec![PrComment {
+                    id: "planted-1".to_string(),
+                    body: "Please add inline docs to the public function.".to_string(),
+                    author: "human-reviewer".to_string(),
+                }],
+            },
+        ]));
+
+        let events = handle_pr_open(
+            &state, &wid,
+            "feat(add-command): implement Add command and AdditionPerformed event".to_string(),
+            "Closes the add-command slice.\n\nImplements the Add command handler.".to_string(),
+            "feature/add-command".to_string(),
+            "main".to_string(),
+            &forge_dyn,
+        ).await.expect("open_pr");
+
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen)
+        );
+
+        // ── RESTART mid-review ────────────────────────────────────────────────
+        drop(state);
+        let mut state = load_project_state(root).expect("load").expect("Some");
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen),
+            "PrOpen phase must survive restart"
+        );
+
+        // ── cf_next_step → RunPrPoll ──────────────────────────────────────────
+        let step = match handle_next_step(&state, None).expect("next_step") {
+            NextStepResponse::Ready(s) => s,
+            NextStepResponse::Idle(_) => panic!("expected Ready for RunPrPoll"),
+        };
+        assert!(matches!(step.action, StepAction::RunPrPoll), "after restart must be RunPrPoll");
+
+        // ── First poll: planted comment ───────────────────────────────────────
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.expect("poll 1");
+        assert_eq!(events.len(), 1, "one comment → one triage event");
+        let triage_item_id = match &events[0] {
+            FactoryEvent::ReviewCommentTriageCreated { triage_item_id, .. } => triage_item_id.clone(),
+            other => panic!("expected ReviewCommentTriageCreated, got {other:?}"),
+        };
+
+        // Kernel creates the triage work item.
+        let triage_item = WorkItem::new(
+            triage_item_id.clone(),
+            PhaseKind::Review,
+            WorkType::PrCommentTriage,
+            "Comment planted-1: Please add inline docs to the public function.".to_string(),
+        );
+        append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: triage_item }, &mut state);
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::CommentTriagePending)
+        );
+
+        // ── cf_next_step → SpawnAgent for triage ─────────────────────────────
+        let step = match handle_next_step(&state, None).expect("next_step") {
+            NextStepResponse::Ready(s) => s,
+            NextStepResponse::Idle(_) => panic!("expected Ready for triage SpawnAgent"),
+        };
+        assert!(
+            matches!(step.action, StepAction::SpawnAgent { .. }),
+            "triage step must be SpawnAgent, got {:?}", step.action
+        );
+        assert_eq!(step.work_item_id, wid, "step belongs to parent review item");
+
+        // ── Agent posts a reply — kernel records ReviewCommentPosted ─────────
+        forge_dyn.post_comment(1, "Done — added doc comment as requested.").await.unwrap();
+
+        append(root, &mut seq, FactoryEvent::ReviewCommentPosted {
+            review_work_item_id: wid.clone(),
+            comment_id: "planted-1".to_string(),
+            triage_item_id: triage_item_id.clone(),
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: triage_item_id }, &mut state);
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::PrOpen),
+            "after triage done, back to PrOpen"
+        );
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| r.pending_triage.len()),
+            Some(0)
+        );
+
+        // ── Second poll: all-green ────────────────────────────────────────────
+        let step = match handle_next_step(&state, None).expect("next_step") {
+            NextStepResponse::Ready(s) => s,
+            NextStepResponse::Idle(_) => panic!("expected Ready for second RunPrPoll"),
+        };
+        assert!(matches!(step.action, StepAction::RunPrPoll));
+
+        let events = handle_pr_poll(&state, &wid, &forge_dyn).await.expect("poll 2");
+        assert_eq!(events.len(), 1, "all-green poll produces ReviewAllGreen");
+        assert!(matches!(events[0], FactoryEvent::ReviewAllGreen { .. }));
+
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::AllGreen)
+        );
+
+        // ── cf_next_step → MergePr ────────────────────────────────────────────
+        let step = match handle_next_step(&state, None).expect("next_step") {
+            NextStepResponse::Ready(s) => s,
+            NextStepResponse::Idle(_) => panic!("expected Ready for MergePr"),
+        };
+        assert!(matches!(step.action, StepAction::MergePr), "must be MergePr");
+
+        // ── Merge ─────────────────────────────────────────────────────────────
+        let events = handle_pr_merge(&state, &wid, &forge_dyn).await.expect("merge");
+        for event in events { append(root, &mut seq, event, &mut state); }
+
+        assert!(forge.is_merged(1), "PR must be merged on the forge");
+        assert_eq!(
+            state.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::Merged)
+        );
+
+        let item = state.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(item.status, WorkItemStatus::Done, "slice must be Done after merge");
+
+        // ── No more work ──────────────────────────────────────────────────────
+        let response = handle_next_step(&state, None).expect("next_step after done");
+        assert!(
+            matches!(response, NextStepResponse::Idle(_)),
+            "no work after merge"
+        );
+
+        // ── Final restart durability check ────────────────────────────────────
+        let replayed = load_project_state(root).expect("replay").expect("Some");
+        let replayed_item = replayed.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(replayed_item.status, WorkItemStatus::Done, "Done status survives replay");
+        assert_eq!(
+            replayed.review_states.get(&wid).map(|r| &r.phase),
+            Some(&ReviewSlicePhase::Merged),
+            "Merged phase survives replay"
+        );
+    }
+}
+
 /// M3 exit-criterion test.
 ///
 /// Demonstrates the full M3 scenario: emc-verified workflow slices are ingested

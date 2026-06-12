@@ -6,7 +6,10 @@
 
 use crate::project::ProjectState;
 use cfk_core::{
-    state_machine::work_item::{next_ready, validate_claim},
+    state_machine::{
+        review::ReviewSlicePhase,
+        work_item::{next_ready, validate_claim},
+    },
     types::{
         gate::{GateKind, GateVerdict},
         ids::{LeaseId, StepId, WorkItemId},
@@ -155,6 +158,56 @@ fn tdd_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep
     })
 }
 
+/// Build the next step for a review work item based on its current `ReviewSlicePhase`.
+///
+/// Returns `None` if the phase is terminal (`Merged`).
+fn review_step(state: &ProjectState, work_item_id: &WorkItemId) -> Option<ReadyStep> {
+    let item = state.work_items.iter().find(|i| &i.id == work_item_id)?;
+    let step_id = StepId::new();
+
+    // No review state yet means the PR hasn't been opened — treat as WaitingForPr.
+    let review = state.review_states.get(work_item_id);
+
+    let action: StepAction = match review.map(|r| &r.phase) {
+        None | Some(ReviewSlicePhase::WaitingForPr) => {
+            let prompt = build_prompt(&format!(
+                "Open a pull request for the slice: {}\n\n\
+                 Provide a descriptive title and body. Submit via `cf_pr_open`.",
+                item.description
+            ));
+            StepAction::OpenPr { prompt }
+        }
+        Some(ReviewSlicePhase::PrOpen) => StepAction::RunPrPoll,
+        Some(ReviewSlicePhase::CommentTriagePending) => {
+            let review = review.expect("Some checked above");
+            // Find the first pending triage (comment_id, triage_item_id).
+            let (comment_id, triage_item_id) = review.pending_triage.first()?;
+            let triage_item = state.work_items.iter()
+                .find(|i| &i.id == triage_item_id)?;
+            let executor = cfk_core::routing::resolve(&state.routing, WorkType::PrCommentTriage)
+                .ok()?.clone();
+            let prompt = build_prompt(&format!(
+                "Respond to this PR review comment for the slice: {}\n\n\
+                 Comment ID: {comment_id}\n\
+                 Comment: {}\n\n\
+                 Write a concise, professional reply. Submit via `cf_submit`.",
+                item.description,
+                triage_item.description,
+            ));
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        Some(ReviewSlicePhase::AllGreen) => StepAction::MergePr,
+        Some(ReviewSlicePhase::Merged) => return None,
+    };
+
+    Some(ReadyStep {
+        step_id,
+        work_item_id: work_item_id.clone(),
+        phase: item.phase,
+        action,
+    })
+}
+
 fn build_prompt(text: &str) -> StepPrompt {
     StepPrompt::try_new(text.to_string()).unwrap_or_else(|_| {
         StepPrompt::try_new("Process this work item.".to_string())
@@ -198,6 +251,22 @@ pub fn handle_next_step(
             if let Some(step) = tdd_step(state, &item.id) {
                 return Ok(NextStepResponse::Ready(step));
             }
+        }
+    }
+
+    // 1b. Check if any in-progress review item needs a review step.
+    for item in &state.work_items {
+        if phase_filter.is_some_and(|p| item.phase != p) {
+            continue;
+        }
+        if item.status != cfk_core::state_machine::work_item::WorkItemStatus::InProgress {
+            continue;
+        }
+        if item.phase != PhaseKind::Review {
+            continue;
+        }
+        if let Some(step) = review_step(state, &item.id) {
+            return Ok(NextStepResponse::Ready(step));
         }
     }
 

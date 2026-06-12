@@ -11,7 +11,10 @@ use crate::{
     store::event_export_dir,
 };
 use cfk_core::{
-    state_machine::work_item::WorkItemStatus,
+    state_machine::{
+        review::{ReviewSlicePhase, ReviewSliceState},
+        work_item::WorkItemStatus,
+    },
     types::{
         gate::GateKind,
         tdd::{DevSliceState, TddFrame, TddPhase},
@@ -181,6 +184,57 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
                 && let Some(frame) = dev.current_frame_mut()
             {
                 frame.phase = TddPhase::Done;
+            }
+            // Work item completion is handled by a separate WorkItemCompleted event.
+        }
+
+        // ── Review events ────────────────────────────────────────────────
+
+        FactoryEvent::ReviewSliceStarted { work_item_id, pr_number, pr_url } => {
+            let mut review = ReviewSliceState::new(work_item_id.clone());
+            review.phase = ReviewSlicePhase::PrOpen;
+            review.pr_number = Some(*pr_number);
+            review.pr_url = Some(pr_url.clone());
+            state.review_states.insert(work_item_id.clone(), review);
+        }
+
+        FactoryEvent::ReviewCommentTriageCreated {
+            review_work_item_id,
+            triage_item_id,
+            comment_id,
+            comment_body: _,
+        } => {
+            if let Some(review) = state.review_states.get_mut(review_work_item_id) {
+                review.seen_comment_ids.push(comment_id.clone());
+                review.pending_triage.push((comment_id.clone(), triage_item_id.clone()));
+                review.phase = ReviewSlicePhase::CommentTriagePending;
+            }
+        }
+
+        FactoryEvent::ReviewCommentPosted {
+            review_work_item_id,
+            comment_id,
+            triage_item_id,
+        } => {
+            if let Some(review) = state.review_states.get_mut(review_work_item_id) {
+                review.pending_triage.retain(|(cid, tid)| {
+                    cid != comment_id || tid != triage_item_id
+                });
+                if review.pending_triage.is_empty() {
+                    review.phase = ReviewSlicePhase::PrOpen;
+                }
+            }
+        }
+
+        FactoryEvent::ReviewAllGreen { work_item_id } => {
+            if let Some(review) = state.review_states.get_mut(work_item_id) {
+                review.phase = ReviewSlicePhase::AllGreen;
+            }
+        }
+
+        FactoryEvent::ReviewPrMerged { work_item_id } => {
+            if let Some(review) = state.review_states.get_mut(work_item_id) {
+                review.phase = ReviewSlicePhase::Merged;
             }
             // Work item completion is handled by a separate WorkItemCompleted event.
         }

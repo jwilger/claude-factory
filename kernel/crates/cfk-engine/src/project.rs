@@ -5,7 +5,10 @@
 //! The projection is rebuilt from scratch on restart (event sourcing).
 
 use cfk_core::{
-    state_machine::work_item::{WorkItem, WorkItemStatus},
+    state_machine::{
+        review::ReviewSliceState,
+        work_item::{WorkItem, WorkItemStatus},
+    },
     types::{
         ids::{ProjectId, WorkItemId},
         lease::Lease,
@@ -27,6 +30,8 @@ pub struct ProjectState {
     pub leases: Vec<Lease>,
     /// TDD state for each in-progress development slice.
     pub dev_states: HashMap<WorkItemId, DevSliceState>,
+    /// Review state for each in-progress review slice.
+    pub review_states: HashMap<WorkItemId, ReviewSliceState>,
     /// Which phases are active (initialized).
     pub active_phases: Vec<PhaseKind>,
 }
@@ -42,6 +47,7 @@ impl ProjectState {
             work_items: Vec::new(),
             leases: Vec::new(),
             dev_states: HashMap::new(),
+            review_states: HashMap::new(),
             active_phases: PhaseKind::all().to_vec(),
         }
     }

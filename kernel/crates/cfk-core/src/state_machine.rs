@@ -9,5 +9,6 @@
 
 pub mod tdd;
 pub mod work_item;
+pub mod review;
 
 pub use work_item::{WorkItem, WorkItemState, WorkItemError};

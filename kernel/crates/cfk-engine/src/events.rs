@@ -85,6 +85,31 @@ pub enum FactoryEvent {
     TddDrillDownPopped { work_item_id: WorkItemId },
     /// All TDD frames complete; slice is done (work item proceeds to commit).
     TddSliceDone { work_item_id: WorkItemId },
+
+    // ── Review phase events ──────────────────────────────────────────────
+    /// A review slice was started and a PR was opened.
+    ReviewSliceStarted {
+        work_item_id: WorkItemId,
+        pr_number: u64,
+        pr_url: String,
+    },
+    /// A new PR comment was triaged — a `PrCommentTriage` work item was created.
+    ReviewCommentTriageCreated {
+        review_work_item_id: WorkItemId,
+        triage_item_id: WorkItemId,
+        comment_id: String,
+        comment_body: String,
+    },
+    /// The kernel posted a reply to a PR comment (triage item completed).
+    ReviewCommentPosted {
+        review_work_item_id: WorkItemId,
+        comment_id: String,
+        triage_item_id: WorkItemId,
+    },
+    /// All CI checks passed and the PR is approved.
+    ReviewAllGreen { work_item_id: WorkItemId },
+    /// The PR was merged; the slice is done.
+    ReviewPrMerged { work_item_id: WorkItemId },
 }
 
 /// A persisted event with metadata.

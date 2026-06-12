@@ -16,8 +16,10 @@ use cfk_engine::{
     config::default_routing_table,
     emc::read_verified_slices,
     events::{FactoryEvent, append_event},
+    forge::{ForgeAdapter, GiteaForge, MemoryForge},
     loader::{apply_event, load_project_state},
     project::ProjectState,
+    review::{handle_pr_merge, handle_pr_poll},
     runner::run_check,
 };
 use rmcp::{
@@ -123,6 +125,32 @@ pub struct RunCheckParams {
     pub work_item_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PrOpenParams {
+    /// The `work_item_id` of the review slice.
+    pub work_item_id: String,
+    /// Pull request title.
+    pub title: String,
+    /// Pull request body (description).
+    pub body: String,
+    /// Head branch name (the branch with the changes).
+    pub head: String,
+    /// Base branch to merge into (e.g. `main`).
+    pub base: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PrPollParams {
+    /// The `work_item_id` of the review slice.
+    pub work_item_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PrMergeParams {
+    /// The `work_item_id` of the review slice.
+    pub work_item_id: String,
+}
+
 // ── Response types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -183,6 +211,7 @@ impl ServerState {
 #[derive(Clone)]
 pub struct CfkServer {
     state: Arc<RwLock<ServerState>>,
+    forge: Arc<dyn ForgeAdapter>,
     // Used by the `#[tool_handler]` macro; dead-code lint doesn't see the use.
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
@@ -191,9 +220,27 @@ pub struct CfkServer {
 impl CfkServer {
     /// Load existing project state (if any) and return a ready server.
     ///
+    /// Uses `GiteaForge` when `GITEA_URL`/`GITEA_TOKEN`/`GITEA_OWNER`/`GITEA_REPO`
+    /// are set; otherwise falls back to an in-memory forge (for local dev/testing).
+    ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
     pub fn load(project_root: PathBuf) -> anyhow::Result<Self> {
+        let forge: Arc<dyn ForgeAdapter> = match GiteaForge::from_env() {
+            Ok(f) => f,
+            Err(_) => MemoryForge::new(),
+        };
+        Self::load_with_forge(project_root, forge)
+    }
+
+    /// Load with an explicit forge adapter (used in tests).
+    ///
+    /// # Errors
+    /// Returns an error if the event log cannot be read.
+    pub fn load_with_forge(
+        project_root: PathBuf,
+        forge: Arc<dyn ForgeAdapter>,
+    ) -> anyhow::Result<Self> {
         let project = load_project_state(&project_root)?;
         let event_sequence: u64 = {
             let dir = cfk_engine::store::event_export_dir(&project_root);
@@ -212,6 +259,7 @@ impl CfkServer {
                 project,
                 event_sequence,
             ))),
+            forge,
             tool_router: Self::tool_router(),
         })
     }
@@ -509,7 +557,8 @@ For other phases: any JSON value is accepted as evidence.")]
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
         // Extract state into owned values to release the immutable borrow before emit.
-        let (current_tdd_phase, item_status, author_identity, frame_depth) = {
+        let (current_tdd_phase, item_status, item_work_type, author_identity, frame_depth,
+             triage_review_info) = {
             let guard = self.state.read().await;
             let proj = guard.project.as_ref()
                 .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
@@ -518,9 +567,9 @@ For other phases: any JSON value is accepted as evidence.")]
                 return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
             }
 
-            let status = proj.work_items.iter()
-                .find(|i| i.id == work_item_id)
-                .map(|i| i.status);
+            let item = proj.work_items.iter().find(|i| i.id == work_item_id);
+            let status = item.map(|i| i.status);
+            let work_type = item.map(|i| i.work_type);
 
             let phase = proj.dev_states.get(&work_item_id)
                 .and_then(|d| d.current_phase()).cloned();
@@ -532,7 +581,16 @@ For other phases: any JSON value is accepted as evidence.")]
             let depth = proj.dev_states.get(&work_item_id)
                 .and_then(|d| d.current_frame()).map_or(0, |f| f.depth);
 
-            (phase, status, author, depth)
+            // If this is a triage item, find its parent review work item + comment_id.
+            let triage_info = proj.review_states.iter().find_map(|(review_wid, rs)| {
+                rs.pending_triage.iter().find(|(_, tid)| tid == &work_item_id)
+                    .map(|(cid, _)| {
+                        let pr_number = rs.pr_number.unwrap_or(0);
+                        (review_wid.clone(), cid.clone(), pr_number)
+                    })
+            });
+
+            (phase, status, work_type, author, depth, triage_info)
         };
 
         let mut guard = self.state.write().await;
@@ -607,6 +665,32 @@ For other phases: any JSON value is accepted as evidence.")]
                         params.work_item_id
                     )));
                 }
+
+                // If this is a PrCommentTriage item, post the comment to the forge
+                // before completing the work item.
+                if item_work_type == Some(WorkType::PrCommentTriage)
+                    && let Some((review_wid, comment_id, pr_number)) = triage_review_info
+                {
+                    let reply_body = params.result
+                        .get("reply")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_else(|| {
+                            params.result.as_str().unwrap_or("(no reply provided)")
+                        })
+                        .to_string();
+
+                    self.forge
+                        .post_comment(pr_number, &reply_body)
+                        .await
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                    guard.emit(FactoryEvent::ReviewCommentPosted {
+                        review_work_item_id: review_wid,
+                        comment_id,
+                        triage_item_id: work_item_id.clone(),
+                    }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                }
+
                 guard.emit(FactoryEvent::WorkItemCompleted { work_item_id })
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -911,6 +995,167 @@ Provide `work_item_id` to advance the TDD state machine based on the result.")]
         }
 
         content_json(&resp)
+    }
+
+    #[tool(description = "\
+Open a pull request on the forge for a review-phase slice. \
+Returns the PR number and URL. `head` is the source branch; `base` is the \
+target branch (usually `main`).")]
+    async fn cf_pr_open(
+        &self,
+        Parameters(params): Parameters<PrOpenParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        // Validate before hitting the forge (release lock before await).
+        {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+            if let Some(review) = proj.review_states.get(&work_item_id) {
+                use cfk_core::state_machine::review::ReviewSlicePhase;
+                if review.phase != ReviewSlicePhase::WaitingForPr {
+                    return Ok(tool_error(format!(
+                        "work item {} is not in WaitingForPr phase", params.work_item_id
+                    )));
+                }
+            }
+        } // read lock released here
+
+        // Snapshot the state we need, then call forge (async, no lock held).
+        let state_clone = {
+            let guard = self.state.read().await;
+            guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))
+                .map(|p| {
+                    // Build a minimal snapshot: just the work item and review state.
+                    // We use handle_pr_open which needs the full state — clone it.
+                    // ProjectState doesn't impl Clone, so call handle_pr_open directly
+                    // from the guard, which is fine because handle_pr_open doesn't await
+                    // on anything that needs a lock — we release the guard before the forge call.
+                    (
+                        p.work_items.iter().find(|i| i.id == work_item_id).map(|i| i.id.clone()),
+                        p.review_states.get(&work_item_id).map(|r| r.phase.clone()),
+                    )
+                })?
+        };
+        let _ = state_clone; // already validated above
+
+        // Build PR spec and open via forge (no lock held).
+        let spec = cfk_engine::forge::PrSpec {
+            title: params.title.clone(),
+            body: params.body.clone(),
+            head: params.head.clone(),
+            base: params.base.clone(),
+        };
+        let opened = self.forge.open_pr(&spec).await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let pr_number = opened.number;
+        let pr_url = opened.url.clone();
+
+        let mut guard = self.state.write().await;
+        guard.emit(FactoryEvent::ReviewSliceStarted {
+            work_item_id,
+            pr_number,
+            pr_url: pr_url.clone(),
+        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+        }))
+    }
+
+    #[tool(description = "\
+Poll the forge for a review-phase PR: CI status, review approvals, and new \
+comments. New comments produce `PrCommentTriage` work items. \
+Returns a summary of CI status and any new triage items created.")]
+    async fn cf_pr_poll(
+        &self,
+        Parameters(params): Parameters<PrPollParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        let events = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+            handle_pr_poll(proj, &work_item_id, &self.forge)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        };
+
+        let mut triage_ids: Vec<String> = Vec::new();
+        let mut all_green = false;
+
+        for event in &events {
+            match event {
+                FactoryEvent::ReviewCommentTriageCreated { triage_item_id, comment_id, comment_body, .. } => {
+                    // Create a PrCommentTriage work item in the backlog.
+                    let triage_item = cfk_core::state_machine::work_item::WorkItem::new(
+                        triage_item_id.clone(),
+                        cfk_core::types::phase::PhaseKind::Review,
+                        WorkType::PrCommentTriage,
+                        format!("Comment {comment_id}: {}", &comment_body[..comment_body.len().min(120)]),
+                    );
+                    triage_ids.push(triage_item_id.to_string());
+                    let mut guard = self.state.write().await;
+                    guard.emit(FactoryEvent::WorkItemAdded { work_item: triage_item })
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                    guard.emit(event.clone())
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                }
+                FactoryEvent::ReviewAllGreen { .. } => {
+                    all_green = true;
+                    let mut guard = self.state.write().await;
+                    guard.emit(event.clone())
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                }
+                _ => {}
+            }
+        }
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "all_green": all_green,
+            "new_triage_items": triage_ids,
+        }))
+    }
+
+    #[tool(description = "\
+Merge the pull request for a review-phase slice. Only valid when the slice is \
+in `all_green` state (CI passing + approved). Marks the slice as done.")]
+    async fn cf_pr_merge(
+        &self,
+        Parameters(params): Parameters<PrMergeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        let events = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+            handle_pr_merge(proj, &work_item_id, &self.forge)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        };
+
+        let mut guard = self.state.write().await;
+        for event in events {
+            guard.emit(event).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "merged": true,
+        }))
     }
 }
 
