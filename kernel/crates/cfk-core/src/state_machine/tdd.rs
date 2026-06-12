@@ -30,13 +30,25 @@ pub enum TddInput {
     DrillDownComplete,
 }
 
+impl TddInput {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::TestSubmitted { .. } => "TestSubmitted",
+            Self::GateVerdicted { .. } => "GateVerdicted",
+            Self::CheckResult { .. } => "CheckResult",
+            Self::ProgressCheckResult { .. } => "ProgressCheckResult",
+            Self::DrillDownComplete => "DrillDownComplete",
+        }
+    }
+}
+
 /// What changed as a result of a transition (used to emit events in cfk-engine).
 #[derive(Debug, Clone)]
 pub enum TddEffect {
     PhaseChanged { new_phase: TddPhase },
     TestRecorded { content: String, author: String },
     GateVerdictRecorded { kind: GateKind, verdict: GateVerdict, reviewer: String },
-    FailureConfirmed { first_error: String },
+    FailureConfirmed { first_error: Option<String> },
     CheckProgressRecorded { passed: bool, first_error: Option<String> },
     DrillDownPushed { description: String, depth: u32 },
     DrillDownPopped,
@@ -49,8 +61,8 @@ pub enum TddError {
     #[error("no active TDD frame")]
     NoFrame,
 
-    #[error("input {input:?} is invalid in phase {phase:?}")]
-    InvalidInput { input: String, phase: String },
+    #[error("input {input_kind:?} is invalid in phase {phase:?}")]
+    InvalidInput { phase: TddPhase, input_kind: &'static str },
 
     #[error("reviewer identity '{reviewer}' must differ from author identity '{author}'")]
     ReviewerIsAuthor { reviewer: String, author: String },
@@ -63,13 +75,9 @@ pub enum TddError {
 /// returning the list of effects to record as events.
 ///
 /// # Errors
-/// Returns `TddError` if the input is invalid for the current phase.
-///
-/// # Panics
-/// Panics if the frame stack is non-empty at entry but becomes empty mid-
-/// transition — this cannot happen in practice because the match arms that
-/// call `expect("frame exists")` are guarded by the initial `NoFrame` check.
-#[expect(clippy::too_many_lines, reason = "exhaustive phase×input dispatch; each arm is a focused state transition and cannot be meaningfully extracted — will shrink further when NoFrame replaces expect() in P1")]
+/// Returns `TddError` if the input is invalid for the current phase, or if
+/// the frame stack is unexpectedly empty (`TddError::NoFrame`).
+#[expect(clippy::too_many_lines, reason = "exhaustive phase×input dispatch; each arm is a focused state transition that cannot be meaningfully extracted")]
 pub fn transition(
     state: &mut DevSliceState,
     input: TddInput,
@@ -85,7 +93,7 @@ pub fn transition(
     match (phase, input) {
         // ── WriteTest ──────────────────────────────────────────────────────
         (TddPhase::WriteTest, TddInput::TestSubmitted { content, author_identity }) => {
-            let frame = state.current_frame_mut().expect("frame exists");
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
             frame.test_content = Some(content.clone());
             frame.author_identity = Some(author_identity.clone());
             frame.phase = TddPhase::TestReviewGate;
@@ -101,7 +109,7 @@ pub fn transition(
             } else {
                 TddPhase::WriteTest
             };
-            let frame = state.current_frame_mut().expect("frame exists");
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
             frame.phase = new_phase.clone();
             effects.push(TddEffect::GateVerdictRecorded { kind: GateKind::TestReview, verdict, reviewer: reviewer_id });
             effects.push(TddEffect::PhaseChanged { new_phase });
@@ -109,12 +117,11 @@ pub fn transition(
 
         // ── RedCheck ──────────────────────────────────────────────────────
         (TddPhase::RedCheck, TddInput::CheckResult { passed: false, first_error }) => {
-            let err = first_error.unwrap_or_else(|| "test failed (no first-error extracted)".to_string());
-            let frame = state.current_frame_mut().expect("frame exists");
-            frame.expected_failure = Some(err.clone());
-            frame.current_error = Some(err.clone());
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
+            frame.expected_failure = first_error.clone();
+            frame.current_error = first_error.clone();
             frame.phase = TddPhase::Implement;
-            effects.push(TddEffect::FailureConfirmed { first_error: err });
+            effects.push(TddEffect::FailureConfirmed { first_error });
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::Implement });
         }
         (TddPhase::RedCheck, TddInput::CheckResult { passed: true, .. }) => {
@@ -124,9 +131,7 @@ pub fn transition(
         // ── Implement → advance to CheckProgress then run progress logic ──
         (TddPhase::Implement, TddInput::CheckResult { passed, first_error }) => {
             // Advance phase, then re-enter as a ProgressCheckResult.
-            if let Some(frame) = state.current_frame_mut() {
-                frame.phase = TddPhase::CheckProgress;
-            }
+            state.current_frame_mut().ok_or(TddError::NoFrame)?.phase = TddPhase::CheckProgress;
             let sub_input = TddInput::ProgressCheckResult {
                 passed,
                 first_error,
@@ -137,7 +142,7 @@ pub fn transition(
 
         // ── CheckProgress ─────────────────────────────────────────────────
         (TddPhase::CheckProgress, TddInput::ProgressCheckResult { passed: true, .. }) => {
-            let frame = state.current_frame_mut().expect("frame exists");
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
             frame.phase = TddPhase::ImplReviewGate;
             effects.push(TddEffect::CheckProgressRecorded { passed: true, first_error: None });
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::ImplReviewGate });
@@ -147,7 +152,7 @@ pub fn transition(
             first_error,
             drill_down_description: Some(desc),
         }) => {
-            let depth = state.current_frame().expect("frame exists").depth + 1;
+            let depth = state.current_frame().ok_or(TddError::NoFrame)?.depth + 1;
             effects.push(TddEffect::CheckProgressRecorded { passed: false, first_error });
             effects.push(TddEffect::DrillDownPushed { description: desc, depth });
             // Parent stays in CheckProgress; push a fresh child frame.
@@ -158,21 +163,17 @@ pub fn transition(
             first_error,
             drill_down_description: None,
         }) => {
-            let err = first_error.unwrap_or_else(|| "still failing".to_string());
-            let frame = state.current_frame_mut().expect("frame exists");
-            frame.current_error = Some(err.clone());
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
+            frame.current_error = first_error.clone();
             frame.phase = TddPhase::Implement;
-            effects.push(TddEffect::CheckProgressRecorded { passed: false, first_error: Some(err) });
+            effects.push(TddEffect::CheckProgressRecorded { passed: false, first_error });
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::Implement });
         }
 
         // ── DrillDownComplete ─────────────────────────────────────────────
-        (_, TddInput::DrillDownComplete) => {
+        (phase, TddInput::DrillDownComplete) => {
             if state.frames.len() <= 1 {
-                return Err(TddError::InvalidInput {
-                    input: "DrillDownComplete".to_string(),
-                    phase: format!("{:?}", state.current_phase().expect("phase")),
-                });
+                return Err(TddError::InvalidInput { phase, input_kind: "DrillDownComplete" });
             }
             state.frames.pop();
             effects.push(TddEffect::DrillDownPopped);
@@ -191,7 +192,7 @@ pub fn transition(
             } else {
                 TddPhase::Implement
             };
-            let frame = state.current_frame_mut().expect("frame exists");
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
             frame.phase = new_phase.clone();
             effects.push(TddEffect::GateVerdictRecorded {
                 kind: GateKind::ImplementationReview,
@@ -203,24 +204,20 @@ pub fn transition(
 
         // ── LintCheck ─────────────────────────────────────────────────────
         (TddPhase::LintCheck, TddInput::CheckResult { passed: true, .. }) => {
-            let frame = state.current_frame_mut().expect("frame exists");
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
             frame.phase = TddPhase::Done;
             effects.push(TddEffect::SliceDone);
         }
         (TddPhase::LintCheck, TddInput::CheckResult { passed: false, first_error }) => {
-            let err = first_error.unwrap_or_else(|| "lint failed".to_string());
-            let frame = state.current_frame_mut().expect("frame exists");
-            frame.current_error = Some(err);
+            let frame = state.current_frame_mut().ok_or(TddError::NoFrame)?;
+            frame.current_error = first_error;
             frame.phase = TddPhase::Implement;
             effects.push(TddEffect::PhaseChanged { new_phase: TddPhase::Implement });
         }
 
         // ── Invalid ───────────────────────────────────────────────────────
         (phase, input) => {
-            return Err(TddError::InvalidInput {
-                input: format!("{input:?}"),
-                phase: format!("{phase:?}"),
-            });
+            return Err(TddError::InvalidInput { phase, input_kind: input.kind() });
         }
     }
 
@@ -464,5 +461,39 @@ mod tests {
         };
         transition(&mut state, input).expect("lint fail");
         assert_eq!(state.current_phase(), Some(&TddPhase::Implement));
+    }
+
+    #[test]
+    fn transition_on_empty_frame_stack_returns_no_frame_error() {
+        let work_item_id = WorkItemId::new();
+        let mut state = DevSliceState { frames: vec![], work_item_id };
+        let input = TddInput::TestSubmitted {
+            content: "test".to_string(),
+            author_identity: "alice".to_string(),
+        };
+        let err = transition(&mut state, input).expect_err("no frame should fail");
+        assert!(matches!(err, TddError::NoFrame));
+    }
+
+    #[test]
+    fn failed_check_with_no_error_message_records_none() {
+        let mut state = fresh_state();
+        submit_test(&mut state);
+        approve_test_gate(&mut state);
+
+        let input = TddInput::CheckResult { passed: false, first_error: None };
+        let effects = transition(&mut state, input).expect("red check with no message");
+        let failure = effects.iter().find_map(|e| {
+            if let TddEffect::FailureConfirmed { first_error } = e {
+                Some(first_error.clone())
+            } else {
+                None
+            }
+        });
+        assert!(failure.is_some(), "should have a FailureConfirmed effect");
+        assert!(
+            failure.unwrap().is_none(),
+            "first_error should be None when check produced no message"
+        );
     }
 }
