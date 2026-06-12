@@ -69,7 +69,7 @@ pub enum TddError {
 /// Panics if the frame stack is non-empty at entry but becomes empty mid-
 /// transition — this cannot happen in practice because the match arms that
 /// call `expect("frame exists")` are guarded by the initial `NoFrame` check.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "exhaustive phase×input dispatch; each arm is a focused state transition and cannot be meaningfully extracted — will shrink further when NoFrame replaces expect() in P1")]
 pub fn transition(
     state: &mut DevSliceState,
     input: TddInput,

@@ -57,7 +57,7 @@ pub fn load_project_state(root: &Path) -> anyhow::Result<Option<ProjectState>> {
 }
 
 /// Apply one event to the in-memory projection in place.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "exhaustive match over all FactoryEvent variants; each arm is a simple projection step and cannot be meaningfully split")]
 pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
     match event {
         FactoryEvent::ProjectInitialized { .. }

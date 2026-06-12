@@ -50,7 +50,7 @@ impl WorkTypeMetrics {
     /// Average tokens per step where token data was available. Returns `None`
     /// if no token samples have been recorded.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "u64→f64 precision loss is acceptable for an average token estimate; exact token counts are not required")]
     pub fn avg_tokens(&self) -> Option<f64> {
         if self.token_sample_count == 0 {
             None

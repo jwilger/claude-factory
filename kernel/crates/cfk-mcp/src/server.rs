@@ -276,7 +276,7 @@ pub struct CfkServer {
     state: Arc<RwLock<ServerState>>,
     forge: Arc<dyn ForgeAdapter>,
     // Used by the `#[tool_handler]` macro; dead-code lint doesn't see the use.
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "field is read by the #[tool_handler] macro expansion; rustc's dead-code analysis does not see macro-generated references")]
     tool_router: ToolRouter<Self>,
 }
 

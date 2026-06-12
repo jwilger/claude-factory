@@ -566,7 +566,7 @@ mod m2_full_slice {
         apply_event(state, &env.payload);
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "behavioral test covering the full TDD slice lifecycle; the length reflects the number of states exercised, not the complexity of any single step")]
     #[test]
     fn full_slice_lifecycle_with_veto_and_drilldown() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -835,9 +835,8 @@ mod emc_ingestion {
     use crate::emc::read_verified_slices;
     use std::fs;
 
-    #[allow(clippy::needless_pass_by_value)]
-    fn write_emc_event(dir: &std::path::Path, filename: &str, payload: serde_json::Value) {
-        let content = serde_json::to_string_pretty(&payload).unwrap();
+    fn write_emc_event(dir: &std::path::Path, filename: &str, payload: &serde_json::Value) {
+        let content = serde_json::to_string_pretty(payload).unwrap();
         fs::write(dir.join(filename), content).unwrap();
     }
 
@@ -859,7 +858,7 @@ mod emc_ingestion {
         let tmp = tempfile::tempdir().unwrap();
         let emc_dir = setup_emc_dir(tmp.path());
 
-        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", &serde_json::json!({
             "schema_version": "1",
             "event_id": "aaaa",
             "stream_id": "s1",
@@ -882,7 +881,7 @@ mod emc_ingestion {
         let tmp = tempfile::tempdir().unwrap();
         let emc_dir = setup_emc_dir(tmp.path());
 
-        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", &serde_json::json!({
             "schema_version": "1",
             "event_id": "aaaa",
             "stream_id": "s1",
@@ -895,7 +894,7 @@ mod emc_ingestion {
                 "description": "Handles the login command and emits UserLoggedIn."
             }
         }));
-        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", &serde_json::json!({
             "schema_version": "1",
             "event_id": "bbbb",
             "stream_id": "s1",
@@ -908,7 +907,7 @@ mod emc_ingestion {
                 "description": "Projects UserLoggedIn into the active-session read model."
             }
         }));
-        write_emc_event(&emc_dir, "0000000003-cccc.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000003-cccc.json", &serde_json::json!({
             "schema_version": "1",
             "event_id": "cccc",
             "stream_id": "s1",
@@ -928,7 +927,7 @@ mod emc_ingestion {
         let tmp = tempfile::tempdir().unwrap();
         let emc_dir = setup_emc_dir(tmp.path());
 
-        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", &serde_json::json!({
             "schema_version": "1", "event_id": "aaaa", "stream_id": "s1",
             "type": "SliceAdded",
             "payload": {
@@ -936,7 +935,7 @@ mod emc_ingestion {
                 "name": "V Slice", "kind": "state_change", "description": "desc"
             }
         }));
-        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", &serde_json::json!({
             "schema_version": "1", "event_id": "bbbb", "stream_id": "s1",
             "type": "SliceAdded",
             "payload": {
@@ -944,7 +943,7 @@ mod emc_ingestion {
                 "name": "U Slice", "kind": "state_change", "description": "desc"
             }
         }));
-        write_emc_event(&emc_dir, "0000000003-cccc.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000003-cccc.json", &serde_json::json!({
             "schema_version": "1", "event_id": "cccc", "stream_id": "s1",
             "type": "WorkflowReadinessDeclared",
             "payload": { "workflow": "verified-flow" }
@@ -973,7 +972,7 @@ mod emc_ingestion {
         let root = tmp.path();
         let emc_dir = setup_emc_dir(root);
 
-        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", &serde_json::json!({
             "schema_version": "1", "event_id": "aaaa", "stream_id": "s1",
             "type": "SliceAdded",
             "payload": {
@@ -981,7 +980,7 @@ mod emc_ingestion {
                 "name": "Login", "kind": "state_change", "description": "desc"
             }
         }));
-        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", &serde_json::json!({
             "schema_version": "1", "event_id": "bbbb", "stream_id": "s1",
             "type": "WorkflowReadinessDeclared",
             "payload": { "workflow": "login" }
@@ -1477,7 +1476,7 @@ mod m4_review_lifecycle {
         apply_event(state, &env.payload);
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "behavioral test covering the full review-slice lifecycle including comment triage and restart durability; length reflects states exercised")]
     #[tokio::test]
     async fn full_review_lifecycle_with_planted_comment_and_restart() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2096,7 +2095,7 @@ mod architecture_phase {
         },
         types::{
             architecture::AdrStatus,
-            gate::{GateKind, GateVerdict, VetoReason},
+            gate::GateKind,
             ids::{AdrId, ProjectId, WorkItemId},
             phase::PhaseKind,
             routing::WorkType,
@@ -2290,12 +2289,6 @@ mod architecture_phase {
         assert_eq!(state.adrs[0].status, AdrStatus::Rejected);
     }
 
-    /// Suppresses unused-import warnings for types used only as match patterns.
-    #[allow(dead_code)]
-    fn _use_types() {
-        let _ = GateVerdict::Approved;
-        let _ = VetoReason::try_new("x".to_string());
-    }
 }
 
 // ── M5: Design-system phase ──────────────────────────────────────────────────
@@ -2513,7 +2506,7 @@ mod m5_exit_criterion {
     /// M5 exit criterion: each of the three new phases (Discovery, Architecture,
     /// Design-system) runs individually on toy product data, with restart
     /// durability verified for each.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "behavioral test verifying all three early phases run on toy product data with restart durability; length reflects number of states exercised")]
     #[test]
     fn all_three_phases_run_individually_on_toy_product() {
         let dir = tempfile::tempdir().unwrap();
@@ -3099,7 +3092,7 @@ mod m8_concurrency {
 
     /// Lease state and item status survive a full restart via event replay.
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "behavioral test verifying lease state and item status survive event-log replay; length reflects the multi-step setup required")]
     fn lease_state_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
