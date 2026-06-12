@@ -10,6 +10,7 @@ use cfk_core::{
         design::AtomicKind,
         gate::{GateKind, GateVerdict, VetoReason},
         ids::{AdrId, ComponentId, WorkItemId},
+        metrics::StepOutcome,
         phase::PhaseKind,
         routing::WorkType,
         tdd::TddPhase,
@@ -18,7 +19,7 @@ use cfk_core::{
 use cfk_engine::{
     architecture::project_architecture_md,
     checks::load_checks,
-    commands::{CommandError, handle_claim, handle_next_step, validate_gate_verdict},
+    commands::{CommandError, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, validate_gate_verdict},
     config::default_routing_table,
     emc::read_verified_slices,
     events::{FactoryEvent, append_event},
@@ -201,6 +202,16 @@ pub struct DesignAddComponentParams {
 pub struct DesignCrossCheckParams {
     /// Workflow names whose slices should be cross-checked for missing components.
     pub workflows: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RecordOutcomeParams {
+    /// Work item ID the step belongs to.
+    pub work_item_id: String,
+    /// Step outcome: "approved", "vetoed", or "completed".
+    pub outcome: String,
+    /// Tokens consumed by the agent for this step, if known.
+    pub tokens_used: Option<u32>,
 }
 
 // ── Response types ─────────────────────────────────────────────────────────
@@ -1531,6 +1542,57 @@ Returns the IDs of any new work items created.")]
             "new_work_item_ids": new_item_ids,
             "gap_count": new_item_ids.len(),
         }))
+    }
+
+    #[tool(description = "\
+Return aggregated per-work-type metrics: veto rates and average token costs. \
+Use this to justify routing table defaults and identify work types where the \
+current executor is under-performing (high veto rate = consider a stronger \
+model or a different provider). Returns entries sorted by veto rate descending.")]
+    async fn cf_metrics(
+        &self,
+    ) -> Result<CallToolResult, McpError> {
+        let guard = self.state.read().await;
+        let proj = guard.project.as_ref()
+            .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+        let summary = handle_metrics(proj);
+        content_json(&summary)
+    }
+
+    #[tool(description = "\
+Record the outcome of a completed step for routing-table metrics. \
+Call this after every gate verdict (outcome: approved/vetoed) and after \
+every non-gate step completion (outcome: completed). \
+Provide `tokens_used` when the agent reports it. \
+The kernel accumulates these outcomes to compute per-work-type veto rates \
+and average token costs, which justify and guide routing table tuning.")]
+    async fn cf_record_outcome(
+        &self,
+        Parameters(params): Parameters<RecordOutcomeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        let outcome = match params.outcome.as_str() {
+            "approved" => StepOutcome::Approved,
+            "vetoed" => StepOutcome::Vetoed,
+            "completed" => StepOutcome::Completed,
+            other => return Ok(tool_error(format!(
+                "unknown outcome '{other}' — must be 'approved', 'vetoed', or 'completed'"
+            ))),
+        };
+
+        let mut guard = self.state.write().await;
+        let proj = guard.project.as_ref()
+            .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+        let event = handle_record_outcome(proj, &work_item_id, outcome, params.tokens_used)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+
+        guard.emit(event)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({ "recorded": true }))
     }
 }
 

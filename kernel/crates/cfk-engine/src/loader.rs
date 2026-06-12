@@ -60,7 +60,16 @@ pub fn load_project_state(root: &Path) -> anyhow::Result<Option<ProjectState>> {
 #[allow(clippy::too_many_lines)]
 pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
     match event {
-        FactoryEvent::ProjectInitialized { .. } | FactoryEvent::DesignCrossCheckCompleted { .. } => {}
+        FactoryEvent::ProjectInitialized { .. }
+        | FactoryEvent::DesignCrossCheckCompleted { .. } => {}
+
+        FactoryEvent::StepOutcomeRecorded { work_type, outcome, tokens_used } => {
+            state
+                .metrics
+                .entry(*work_type)
+                .or_default()
+                .record(*outcome, *tokens_used);
+        }
 
         FactoryEvent::WorkItemAdded { work_item } => {
             state.work_items.push(work_item.clone());

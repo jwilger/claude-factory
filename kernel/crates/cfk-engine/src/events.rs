@@ -14,6 +14,8 @@ use cfk_core::{
         gate::{GateKind, GateVerdict},
         ids::{LeaseId, ProjectId, WorkItemId},
         lease::Lease,
+        metrics::StepOutcome,
+        routing::WorkType,
         tdd::TddPhase,
     },
 };
@@ -151,6 +153,19 @@ pub enum FactoryEvent {
     DesignCrossCheckCompleted {
         /// IDs of work items generated for missing components.
         generated_item_ids: Vec<WorkItemId>,
+    },
+
+    // ── Metrics events ───────────────────────────────────────────────────
+    /// A step outcome was recorded for routing-table metrics.
+    ///
+    /// The conductor calls `cf_record_outcome` after each step completes to
+    /// accumulate veto rates and token costs per work type. This data justifies
+    /// routing defaults and guides tuning decisions.
+    StepOutcomeRecorded {
+        work_type: WorkType,
+        outcome: StepOutcome,
+        /// Tokens consumed by the agent for this step, if reported.
+        tokens_used: Option<u32>,
     },
 }
 

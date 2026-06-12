@@ -16,6 +16,7 @@ use cfk_core::{
         gate::{GateKind, GateVerdict},
         ids::{LeaseId, StepId, WorkItemId},
         lease::{Lease, SessionIdentity},
+        metrics::{MetricsSummary, StepOutcome, WorkTypeMetricEntry},
         phase::PhaseKind,
         routing::WorkType,
         step::{HumanQuestion, IdleReason, ReadyStep, StepAction, StepPrompt},
@@ -548,6 +549,58 @@ pub fn handle_claim(
         session_identity: identity,
         granted_at: Utc::now(),
         expires_at: None,
+    })
+}
+
+/// Return a summary of per-work-type metrics from the current projection.
+///
+/// The summary is sorted by veto rate descending so the highest-veto routes
+/// appear first — those are the candidates for routing table tuning.
+#[must_use]
+pub fn handle_metrics(state: &ProjectState) -> MetricsSummary {
+    let mut entries: Vec<WorkTypeMetricEntry> = state
+        .metrics
+        .iter()
+        .map(|(work_type, m)| WorkTypeMetricEntry {
+            work_type: *work_type,
+            approvals: m.approvals,
+            vetoes: m.vetoes,
+            completions: m.completions,
+            veto_rate: m.veto_rate(),
+            avg_tokens: m.avg_tokens(),
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        b.veto_rate
+            .unwrap_or(0.0)
+            .partial_cmp(&a.veto_rate.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    MetricsSummary { entries }
+}
+
+/// Build a `StepOutcomeRecorded` event for the given work type and outcome.
+///
+/// # Errors
+/// Returns `CommandError::NotFound` if the work item does not exist.
+pub fn handle_record_outcome(
+    state: &ProjectState,
+    work_item_id: &WorkItemId,
+    outcome: StepOutcome,
+    tokens_used: Option<u32>,
+) -> Result<crate::events::FactoryEvent, CommandError> {
+    let item = state
+        .work_items
+        .iter()
+        .find(|i| &i.id == work_item_id)
+        .ok_or_else(|| CommandError::NotFound(work_item_id.clone()))?;
+
+    Ok(crate::events::FactoryEvent::StepOutcomeRecorded {
+        work_type: item.work_type,
+        outcome,
+        tokens_used,
     })
 }
 

@@ -17,13 +17,15 @@ use cfk_core::{
         design::DesignComponent,
         ids::{ProjectId, WorkItemId},
         lease::Lease,
+        metrics::WorkTypeMetrics,
         phase::PhaseKind,
-        routing::RoutingTable,
+        routing::{RoutingTable, WorkType},
         tdd::DevSliceState,
     },
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+
 
 /// Runtime projection of all factory state for one product project.
 #[derive(Debug)]
@@ -49,6 +51,8 @@ pub struct ProjectState {
     pub design_inventory: Vec<DesignComponent>,
     /// Which phases are active (initialized).
     pub active_phases: Vec<PhaseKind>,
+    /// Accumulated per-work-type metrics (veto rates, token costs).
+    pub metrics: HashMap<WorkType, WorkTypeMetrics>,
 }
 
 impl ProjectState {
@@ -69,6 +73,7 @@ impl ProjectState {
             design_states: HashMap::new(),
             design_inventory: Vec::new(),
             active_phases: PhaseKind::all().to_vec(),
+            metrics: HashMap::new(),
         }
     }
 

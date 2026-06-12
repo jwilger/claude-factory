@@ -1,6 +1,6 @@
 ---
 description: Run the factory conductor loop — dispatches the next ready work item across all phases. Runs continuously until idle or a human decision is needed.
-allowed-tools: Agent, Workflow, Bash, Read, mcp__claude-factory__cf_next_step, mcp__claude-factory__cf_submit, mcp__claude-factory__cf_status, mcp__claude-factory__cf_gate, mcp__claude-factory__cf_escalate, mcp__claude-factory__cf_decide, mcp__claude-factory__cf_run_check, mcp__claude-factory__cf_claim, mcp__claude-factory__cf_release, mcp__claude-factory__cf_discovery_submit, mcp__claude-factory__cf_discovery_approve, mcp__claude-factory__cf_adr_submit, mcp__claude-factory__cf_design_add_component, mcp__claude-factory__cf_design_cross_check, mcp__claude-factory__cf_pr_open, mcp__claude-factory__cf_pr_poll, mcp__claude-factory__cf_pr_merge
+allowed-tools: Agent, Workflow, Bash, Read, mcp__claude-factory__cf_next_step, mcp__claude-factory__cf_submit, mcp__claude-factory__cf_status, mcp__claude-factory__cf_gate, mcp__claude-factory__cf_escalate, mcp__claude-factory__cf_decide, mcp__claude-factory__cf_run_check, mcp__claude-factory__cf_claim, mcp__claude-factory__cf_release, mcp__claude-factory__cf_discovery_submit, mcp__claude-factory__cf_discovery_approve, mcp__claude-factory__cf_adr_submit, mcp__claude-factory__cf_design_add_component, mcp__claude-factory__cf_design_cross_check, mcp__claude-factory__cf_pr_open, mcp__claude-factory__cf_pr_poll, mcp__claude-factory__cf_pr_merge, mcp__claude-factory__cf_record_outcome, mcp__claude-factory__cf_metrics
 argument-hint: "[--phase <phase>] [--once]"
 ---
 
@@ -23,7 +23,8 @@ Arguments: $ARGUMENTS
    - `run_pr_poll`: Call `cf_pr_poll`; the kernel will poll the forge for CI and review status.
    - `merge_pr`: Call `cf_pr_merge` once all-green.
    - `idle`: Report status summary and stop the loop.
-4. If `--once` was passed, stop after one iteration. Otherwise continue from step 1.
+4. After each step completes, call `cf_record_outcome` with the work item id, outcome (approved/vetoed/completed), and token count if known. This accumulates veto-rate and token-cost data for routing-table tuning.
+5. If `--once` was passed, stop after one iteration. Otherwise continue from step 1.
 
 ## Phase submission routing
 

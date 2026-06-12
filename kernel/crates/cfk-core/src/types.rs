@@ -15,3 +15,4 @@ pub mod tdd;
 pub mod forge;
 pub mod architecture;
 pub mod design;
+pub mod metrics;
