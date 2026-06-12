@@ -21,7 +21,7 @@ use cfk_core::{
 use cfk_engine::{
     architecture::project_architecture_md,
     checks::load_checks,
-    commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, validate_gate_verdict},
+    commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, normalize_submission_result, validate_gate_verdict},
     config::default_routing_table,
     emc::read_verified_slices,
     events::{FactoryEvent, append_event},
@@ -618,9 +618,13 @@ For other phases: any JSON value is accepted as evidence.")]
                 .find(|i| i.id == work_item_id)
                 .map(|i| i.work_type);
 
+            // Some MCP conductors JSON-encode the structured `result` argument as
+            // a string; unwrap it back to an object so field lookups succeed.
+            let result = normalize_submission_result(params.result.clone());
+
             match current_tdd_phase {
                 Some(TddPhase::WriteTest) => {
-                    let raw = params.result.get("test_content")
+                    let raw = result.get("test_content")
                         .and_then(serde_json::Value::as_str)
                         .ok_or_else(|| McpError::invalid_params(
                             "WriteTest submission must include {\"test_content\": \"...\"}",
@@ -631,7 +635,7 @@ For other phases: any JSON value is accepted as evidence.")]
                     SubmissionPayload::Test { test_content }
                 }
                 Some(TddPhase::Implement) => {
-                    let drill_down = params.result.get("drill_down_description")
+                    let drill_down = result.get("drill_down_description")
                         .and_then(serde_json::Value::as_str)
                         .map(|s| DrillDownDescription::try_new(s.to_string())
                             .map_err(|_| McpError::invalid_params(
@@ -641,16 +645,16 @@ For other phases: any JSON value is accepted as evidence.")]
                     SubmissionPayload::Implementation { drill_down }
                 }
                 None if item_work_type == Some(WorkType::PrCommentTriage) => {
-                    let raw = params.result.get("reply")
+                    let raw = result.get("reply")
                         .and_then(serde_json::Value::as_str)
-                        .or_else(|| params.result.as_str())
+                        .or_else(|| result.as_str())
                         .unwrap_or("(no reply provided)")
                         .to_string();
                     let reply = CommentBody::try_new(raw)
                         .map_err(|_| McpError::invalid_params("reply cannot be empty", None))?;
                     SubmissionPayload::TriageReply { reply }
                 }
-                Some(_) | None => SubmissionPayload::Generic(params.result.clone()),
+                Some(_) | None => SubmissionPayload::Generic(result),
             }
         };
 

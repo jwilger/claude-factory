@@ -3254,3 +3254,66 @@ mod routing_error_surfaces {
         );
     }
 }
+
+// ── cf_submit boundary result normalization ───────────────────────────────────
+
+#[cfg(test)]
+mod submission_result_normalization {
+    //! Behavioral tests for `normalize_submission_result`.
+    //!
+    //! MCP conductors sometimes JSON-encode a structured `result` argument as a
+    //! string before it reaches the kernel boundary. When that happens, a result
+    //! that should be `{"test_content": "..."}` arrives as the *string*
+    //! `"{\"test_content\":\"...\"}"`, and the `WriteTest` arm's `.get("test_content")`
+    //! lookup returns `None` — wrongly rejecting a valid submission.
+    //!
+    //! `normalize_submission_result` repairs this at the boundary: a string that
+    //! parses to a JSON object is unwrapped to that object; anything else passes
+    //! through unchanged so genuine plain-string payloads are preserved.
+
+    use crate::commands::normalize_submission_result;
+
+    #[test]
+    fn json_encoded_object_string_is_unwrapped() {
+        let inner = serde_json::json!({ "test_content": "#[test] fn x() {}" });
+        let encoded = serde_json::Value::String(inner.to_string());
+
+        let normalized = normalize_submission_result(encoded);
+
+        assert_eq!(
+            normalized.get("test_content").and_then(serde_json::Value::as_str),
+            Some("#[test] fn x() {}"),
+            "a JSON-encoded object string must be unwrapped so .get() can read its fields"
+        );
+    }
+
+    #[test]
+    fn genuine_object_passes_through_unchanged() {
+        let obj = serde_json::json!({ "test_content": "code" });
+
+        let normalized = normalize_submission_result(obj.clone());
+
+        assert_eq!(normalized, obj, "an object result must be returned unchanged");
+    }
+
+    #[test]
+    fn plain_string_payload_passes_through_unchanged() {
+        // A genuine reply string that is not JSON must not be mangled.
+        let reply = serde_json::Value::String("just a reply".to_string());
+
+        let normalized = normalize_submission_result(reply.clone());
+
+        assert_eq!(normalized, reply, "a non-JSON string must pass through unchanged");
+    }
+
+    #[test]
+    fn string_encoding_a_json_scalar_passes_through_unchanged() {
+        // "42" parses as a JSON number, but it is not an object — a triage reply
+        // of "42" must remain the string "42", not become the integer 42.
+        let scalar = serde_json::Value::String("42".to_string());
+
+        let normalized = normalize_submission_result(scalar.clone());
+
+        assert_eq!(normalized, scalar, "only object-encoding strings are unwrapped");
+    }
+}

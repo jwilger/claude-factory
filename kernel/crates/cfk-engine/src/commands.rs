@@ -469,6 +469,31 @@ pub fn validate_gate_verdict(
 
 // ── Submission ────────────────────────────────────────────────────────────────
 
+/// Repair a `cf_submit` `result` argument that an MCP conductor JSON-encoded as
+/// a string before it reached the kernel boundary.
+///
+/// Some MCP clients serialize a structured `result` object to a string, so a
+/// payload that should be `{"test_content": "..."}` arrives instead as the
+/// *string* `"{\"test_content\":\"...\"}"`. The phase-specific arms of
+/// `cf_submit` read fields via `Value::get`, which returns `None` on a string —
+/// wrongly rejecting a valid submission.
+///
+/// When `result` is a string that parses to a JSON **object**, this unwraps it
+/// to that object so field lookups succeed. Anything else — a genuine object, or
+/// a string that is not an encoded object (a plain reply, or a string encoding a
+/// bare scalar like `"42"`) — passes through unchanged, preserving genuine
+/// plain-string payloads.
+#[must_use]
+pub fn normalize_submission_result(result: serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::String(encoded) = &result
+        && let Ok(parsed @ serde_json::Value::Object(_)) =
+            serde_json::from_str::<serde_json::Value>(encoded)
+    {
+        return parsed;
+    }
+    result
+}
+
 /// The payload for a `cf_submit` call, resolved at the MCP JSON boundary.
 pub enum SubmissionPayload {
     /// Test code submitted during the `WriteTest` TDD phase.
