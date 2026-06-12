@@ -1,3 +1,2 @@
-# Exclude build artifacts but keep the pre-built binary for plugin distribution
-.bin/*
-!.bin/cfk
+# Build artifacts not needed for plugin distribution
+.bin/
