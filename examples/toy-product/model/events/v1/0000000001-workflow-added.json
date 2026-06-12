@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "event_id": "a1b2c3d4-0001-0000-0000-000000000001",
+  "stream_id": "toy-product-model",
+  "type": "WorkflowAdded",
+  "payload": {
+    "workflow": "addition",
+    "name": "Addition",
+    "description": "The core addition workflow: takes two numbers, returns their sum."
+  }
+}

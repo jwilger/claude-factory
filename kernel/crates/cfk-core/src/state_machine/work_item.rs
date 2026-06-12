@@ -35,6 +35,9 @@ pub struct WorkItem {
     pub description: String,
     pub active_lease: Option<LeaseId>,
     pub active_step: Option<StepId>,
+    /// The emc slice slug this work item was ingested from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emc_slug: Option<String>,
 }
 
 impl WorkItem {
@@ -53,6 +56,28 @@ impl WorkItem {
             description,
             active_lease: None,
             active_step: None,
+            emc_slug: None,
+        }
+    }
+
+    /// Create a work item sourced from an emc slice.
+    #[must_use]
+    pub fn from_emc_slice(
+        id: WorkItemId,
+        phase: PhaseKind,
+        work_type: WorkType,
+        description: String,
+        emc_slug: String,
+    ) -> Self {
+        Self {
+            id,
+            phase,
+            work_type,
+            status: WorkItemStatus::Ready,
+            description,
+            active_lease: None,
+            active_step: None,
+            emc_slug: Some(emc_slug),
         }
     }
 

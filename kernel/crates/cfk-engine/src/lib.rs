@@ -4,6 +4,7 @@
 //! the command handlers that call cfk-core pure functions.
 
 pub mod checks;
+pub mod emc;
 pub mod commands;
 pub mod config;
 pub mod events;

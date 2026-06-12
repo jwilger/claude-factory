@@ -14,6 +14,7 @@ use cfk_engine::{
     checks::load_checks,
     commands::{CommandError, handle_claim, handle_next_step, validate_gate_verdict},
     config::default_routing_table,
+    emc::read_verified_slices,
     events::{FactoryEvent, append_event},
     loader::{apply_event, load_project_state},
     project::ProjectState,
@@ -104,6 +105,13 @@ pub struct BacklogAddParams {
     pub work_type: String,
     /// Human-readable description of the work.
     pub description: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IngestSlicesParams {
+    /// Absolute path to the product repo root containing `model/events/v1/`.
+    /// Defaults to the kernel's configured project root.
+    pub project_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -769,6 +777,75 @@ Add a work item to the backlog. \
         content_json(&serde_json::to_value(&routing).map_err(|e| {
             McpError::internal_error(format!("serialization error: {e}"), None)
         })?)
+    }
+
+    #[tool(description = "\
+Ingest slices from a formally-verified emc model into the development backlog. \
+Reads `model/events/v1/` under the product repo, finds all `SliceAdded` events \
+whose workflow has a `WorkflowReadinessDeclared` event, and creates a development \
+work item for each new slice (idempotent — already-ingested slugs are skipped). \
+Returns counts of ingested and skipped slices.")]
+    async fn cf_ingest_slices(
+        &self,
+        Parameters(params): Parameters<IngestSlicesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut guard = self.state.write().await;
+        let Some(ref proj) = guard.project else {
+            return Ok(tool_error("Project not initialized. Run `cf_init` first."));
+        };
+
+        let root = params
+            .project_root
+            .map_or_else(|| guard.project_root.clone(), PathBuf::from);
+
+        let slices = read_verified_slices(&root)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        // Collect already-ingested slugs to avoid duplicates.
+        let existing_slugs: std::collections::HashSet<String> = proj
+            .work_items
+            .iter()
+            .filter_map(|i| i.emc_slug.clone())
+            .collect();
+
+        let mut ingested = 0usize;
+        let mut skipped = 0usize;
+        let mut new_ids: Vec<String> = Vec::new();
+
+        for slice in slices {
+            if existing_slugs.contains(&slice.slug) {
+                skipped += 1;
+                continue;
+            }
+
+            let work_type = match slice.kind.as_str() {
+                "translation" | "mechanical" => WorkType::MechanicalTransform,
+                _ => WorkType::NarrowestStepImplementation,
+            };
+
+            let item = WorkItem::from_emc_slice(
+                cfk_core::types::ids::WorkItemId::new(),
+                PhaseKind::Development,
+                work_type,
+                format!("[{}] {}", slice.slug, slice.name),
+                slice.slug.clone(),
+            );
+
+            let id_str = item.id.to_string();
+
+            guard
+                .emit(FactoryEvent::WorkItemAdded { work_item: item })
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+            new_ids.push(id_str);
+            ingested += 1;
+        }
+
+        content_json(&serde_json::json!({
+            "ingested": ingested,
+            "skipped": skipped,
+            "work_item_ids": new_ids,
+        }))
     }
 
     #[tool(description = "\

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "event_id": "a1b2c3d4-0002-0000-0000-000000000002",
+  "stream_id": "toy-product-model",
+  "type": "SliceAdded",
+  "payload": {
+    "workflow": "addition",
+    "slug": "add-command",
+    "name": "Add Command",
+    "kind": "state_change",
+    "description": "Accepts two u64 operands via the Add command and emits an AdditionPerformed event carrying the sum."
+  }
+}

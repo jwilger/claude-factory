@@ -828,3 +828,402 @@ mod m2_full_slice {
         );
     }
 }
+
+#[cfg(test)]
+mod emc_ingestion {
+    use crate::emc::read_verified_slices;
+    use std::fs;
+
+    fn write_emc_event(dir: &std::path::Path, filename: &str, payload: serde_json::Value) {
+        let content = serde_json::to_string_pretty(&payload).unwrap();
+        fs::write(dir.join(filename), content).unwrap();
+    }
+
+    fn setup_emc_dir(root: &std::path::Path) -> std::path::PathBuf {
+        let emc_dir = root.join("model").join("events").join("v1");
+        fs::create_dir_all(&emc_dir).unwrap();
+        emc_dir
+    }
+
+    #[test]
+    fn empty_model_dir_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slices = read_verified_slices(tmp.path()).unwrap();
+        assert!(slices.is_empty(), "no model dir → no slices");
+    }
+
+    #[test]
+    fn slices_without_verified_workflow_are_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let emc_dir = setup_emc_dir(tmp.path());
+
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+            "schema_version": "1",
+            "event_id": "aaaa",
+            "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "user-login",
+                "slug": "login-state-change",
+                "name": "Login State Change",
+                "kind": "state_change",
+                "description": "Handles the login command and emits UserLoggedIn."
+            }
+        }));
+
+        let slices = read_verified_slices(tmp.path()).unwrap();
+        assert!(slices.is_empty(), "unverified workflow slices must not be ingested");
+    }
+
+    #[test]
+    fn verified_workflow_slices_are_returned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let emc_dir = setup_emc_dir(tmp.path());
+
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+            "schema_version": "1",
+            "event_id": "aaaa",
+            "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "user-login",
+                "slug": "login-state-change",
+                "name": "Login State Change",
+                "kind": "state_change",
+                "description": "Handles the login command and emits UserLoggedIn."
+            }
+        }));
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+            "schema_version": "1",
+            "event_id": "bbbb",
+            "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "user-login",
+                "slug": "login-view",
+                "name": "Login View",
+                "kind": "state_view",
+                "description": "Projects UserLoggedIn into the active-session read model."
+            }
+        }));
+        write_emc_event(&emc_dir, "0000000003-cccc.json", serde_json::json!({
+            "schema_version": "1",
+            "event_id": "cccc",
+            "stream_id": "s1",
+            "type": "WorkflowReadinessDeclared",
+            "payload": { "workflow": "user-login" }
+        }));
+
+        let slices = read_verified_slices(tmp.path()).unwrap();
+        assert_eq!(slices.len(), 2);
+        let slugs: Vec<&str> = slices.iter().map(|s| s.slug.as_str()).collect();
+        assert!(slugs.contains(&"login-state-change"));
+        assert!(slugs.contains(&"login-view"));
+    }
+
+    #[test]
+    fn only_verified_workflows_included_when_multiple_workflows_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let emc_dir = setup_emc_dir(tmp.path());
+
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+            "schema_version": "1", "event_id": "aaaa", "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "verified-flow", "slug": "v-slice",
+                "name": "V Slice", "kind": "state_change", "description": "desc"
+            }
+        }));
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+            "schema_version": "1", "event_id": "bbbb", "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "unverified-flow", "slug": "u-slice",
+                "name": "U Slice", "kind": "state_change", "description": "desc"
+            }
+        }));
+        write_emc_event(&emc_dir, "0000000003-cccc.json", serde_json::json!({
+            "schema_version": "1", "event_id": "cccc", "stream_id": "s1",
+            "type": "WorkflowReadinessDeclared",
+            "payload": { "workflow": "verified-flow" }
+        }));
+
+        let slices = read_verified_slices(tmp.path()).unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].slug, "v-slice");
+    }
+
+    #[test]
+    fn dedup_by_emc_slug_prevents_double_ingestion() {
+        use crate::{
+            commands::handle_next_step,
+            config::default_routing_table,
+            events::{FactoryEvent, append_event},
+            loader::apply_event,
+            project::ProjectState,
+        };
+        use cfk_core::{
+            state_machine::work_item::WorkItem,
+            types::{ids::ProjectId, phase::PhaseKind, routing::WorkType},
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let emc_dir = setup_emc_dir(root);
+
+        write_emc_event(&emc_dir, "0000000001-aaaa.json", serde_json::json!({
+            "schema_version": "1", "event_id": "aaaa", "stream_id": "s1",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "login", "slug": "login-slice",
+                "name": "Login", "kind": "state_change", "description": "desc"
+            }
+        }));
+        write_emc_event(&emc_dir, "0000000002-bbbb.json", serde_json::json!({
+            "schema_version": "1", "event_id": "bbbb", "stream_id": "s1",
+            "type": "WorkflowReadinessDeclared",
+            "payload": { "workflow": "login" }
+        }));
+
+        let mut state = ProjectState::new(ProjectId::new(), root.to_path_buf(), default_routing_table());
+        let mut seq = 0u64;
+
+        // Simulate first ingestion: manually add the emc-sourced work item.
+        let item = WorkItem::from_emc_slice(
+            cfk_core::types::ids::WorkItemId::new(),
+            PhaseKind::Development,
+            WorkType::NarrowestStepImplementation,
+            "[login-slice] Login".to_string(),
+            "login-slice".to_string(),
+        );
+        seq += 1;
+        let env = append_event(root, seq, FactoryEvent::WorkItemAdded { work_item: item }).unwrap();
+        apply_event(&mut state, &env.payload);
+
+        // Check existing slugs to simulate dedup logic.
+        let existing: std::collections::HashSet<String> = state
+            .work_items
+            .iter()
+            .filter_map(|i| i.emc_slug.clone())
+            .collect();
+
+        let slices = read_verified_slices(root).unwrap();
+        let new_slices: Vec<_> = slices.iter().filter(|s| !existing.contains(&s.slug)).collect();
+
+        assert!(new_slices.is_empty(), "already-ingested slug must be skipped on second ingest");
+
+        // Verify exactly one work item in state.
+        let response = handle_next_step(&state, None).unwrap();
+        assert!(
+            matches!(response, crate::commands::NextStepResponse::Ready(_)),
+            "the single work item should be ready"
+        );
+    }
+}
+
+/// M3 exit-criterion test.
+///
+/// Demonstrates the full M3 scenario: emc-verified workflow slices are ingested
+/// into the kernel backlog and the first slice proceeds through the M2 TDD
+/// machinery to completion.
+#[cfg(test)]
+mod m3_emc_integration {
+    use crate::{
+        config::default_routing_table,
+        emc::read_verified_slices,
+        events::{FactoryEvent, append_event},
+        loader::{apply_event, load_project_state},
+        project::ProjectState,
+    };
+    use cfk_core::{
+        state_machine::work_item::{WorkItem, WorkItemStatus},
+        types::{
+            gate::{GateKind, GateVerdict},
+            ids::{ProjectId, WorkItemId},
+            phase::PhaseKind,
+            routing::WorkType,
+            tdd::TddPhase,
+        },
+    };
+    use std::fs;
+
+    fn setup_toy_product_model(root: &std::path::Path) {
+        let dir = root.join("model").join("events").join("v1");
+        fs::create_dir_all(&dir).unwrap();
+
+        let write = |name: &str, payload: serde_json::Value| {
+            fs::write(dir.join(name), serde_json::to_string_pretty(&payload).unwrap()).unwrap();
+        };
+
+        write("0000000001-wf.json", serde_json::json!({
+            "schema_version": "1", "event_id": "e1", "stream_id": "m",
+            "type": "WorkflowAdded",
+            "payload": { "workflow": "addition", "name": "Addition", "description": "Adds numbers." }
+        }));
+        write("0000000002-s1.json", serde_json::json!({
+            "schema_version": "1", "event_id": "e2", "stream_id": "m",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "addition", "slug": "add-command",
+                "name": "Add Command", "kind": "state_change",
+                "description": "Implement the add function: takes two u64, returns their sum."
+            }
+        }));
+        write("0000000003-s2.json", serde_json::json!({
+            "schema_version": "1", "event_id": "e3", "stream_id": "m",
+            "type": "SliceAdded",
+            "payload": {
+                "workflow": "addition", "slug": "sum-view",
+                "name": "Sum View", "kind": "state_view",
+                "description": "Project AdditionPerformed into a SumResult read model."
+            }
+        }));
+        write("0000000004-rd.json", serde_json::json!({
+            "schema_version": "1", "event_id": "e4", "stream_id": "m",
+            "type": "WorkflowReadinessDeclared",
+            "payload": { "workflow": "addition" }
+        }));
+    }
+
+    fn append(
+        root: &std::path::Path,
+        seq: &mut u64,
+        event: FactoryEvent,
+        state: &mut ProjectState,
+    ) {
+        *seq += 1;
+        let env = append_event(root, *seq, event).unwrap();
+        apply_event(state, &env.payload);
+    }
+
+    #[test]
+    fn emc_slices_appear_in_backlog_and_first_slice_completes_tdd_cycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        setup_toy_product_model(root);
+
+        // ── Ingest slices from verified emc model ──────────────────────────────
+        let slices = read_verified_slices(root).unwrap();
+        assert_eq!(slices.len(), 2, "both slices of the verified addition workflow");
+
+        let project_id = ProjectId::new();
+        let mut state = ProjectState::new(project_id.clone(), root.to_path_buf(), default_routing_table());
+        let mut seq = 0u64;
+
+        // Emit ProjectInitialized so load_project_state can replay.
+        append(root, &mut seq, FactoryEvent::ProjectInitialized { id: project_id }, &mut state);
+
+        let existing_slugs: std::collections::HashSet<String> = state
+            .work_items.iter().filter_map(|i| i.emc_slug.clone()).collect();
+
+        let mut work_item_ids: Vec<WorkItemId> = Vec::new();
+        for slice in &slices {
+            if existing_slugs.contains(&slice.slug) {
+                continue;
+            }
+            let work_type = if slice.kind == "translation" {
+                WorkType::MechanicalTransform
+            } else {
+                WorkType::NarrowestStepImplementation
+            };
+            let item = WorkItem::from_emc_slice(
+                WorkItemId::new(), PhaseKind::Development, work_type,
+                format!("[{}] {}", slice.slug, slice.name),
+                slice.slug.clone(),
+            );
+            let id = item.id.clone();
+            append(root, &mut seq, FactoryEvent::WorkItemAdded { work_item: item }, &mut state);
+            work_item_ids.push(id);
+        }
+
+        assert_eq!(state.work_items.len(), 2);
+        assert!(
+            state.work_items.iter().all(|i| i.emc_slug.is_some()),
+            "every ingested item carries its emc_slug"
+        );
+
+        // ── Build the first slice through the M2 TDD machinery ────────────────
+        let wid = work_item_ids[0].clone();
+
+        // Claim and start TDD.
+        append(root, &mut seq, FactoryEvent::LeaseGranted {
+            lease: cfk_core::types::lease::Lease {
+                id: cfk_core::types::ids::LeaseId::new(),
+                work_item_id: wid.clone(),
+                session_identity: cfk_core::types::lease::SessionIdentity::try_new(
+                    "alice".to_string()).unwrap(),
+                granted_at: chrono::Utc::now(),
+                expires_at: None,
+            }
+        }, &mut state);
+        append(root, &mut seq, FactoryEvent::TddSliceStarted {
+            work_item_id: wid.clone(), author_identity: "alice".to_string(),
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::WriteTest));
+
+        // WriteTest → TestReviewGate → RedCheck → Implement → CheckProgress (green) → ImplReviewGate → LintCheck → Done
+        append(root, &mut seq, FactoryEvent::TddTestSubmitted {
+            work_item_id: wid.clone(), frame_depth: 0,
+            test_content: "assert_eq!(add(2, 2), 4);".to_string(),
+            author_identity: "alice".to_string(),
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::TestReviewGate));
+
+        // Gate: approved.
+        append(root, &mut seq, FactoryEvent::TddGateVerdict {
+            work_item_id: wid.clone(), gate_kind: GateKind::TestReview,
+            verdict: GateVerdict::Approved, reviewer_id: "bob".to_string(),
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::RedCheck));
+
+        // Red check: fails (expected).
+        append(root, &mut seq, FactoryEvent::TddCheckResult {
+            work_item_id: wid.clone(), check_name: "tests".to_string(),
+            passed: false, first_error: Some("error[E0425]: cannot find function `add`".to_string()),
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Implement));
+
+        // Implement → CheckProgress.
+        append(root, &mut seq, FactoryEvent::TddPhaseAdvanced {
+            work_item_id: wid.clone(), frame_depth: 0, new_phase: TddPhase::CheckProgress,
+        }, &mut state);
+
+        // Green.
+        append(root, &mut seq, FactoryEvent::TddCheckResult {
+            work_item_id: wid.clone(), check_name: "tests".to_string(),
+            passed: true, first_error: None,
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::ImplReviewGate));
+
+        // Implementation review: approved.
+        append(root, &mut seq, FactoryEvent::TddGateVerdict {
+            work_item_id: wid.clone(), gate_kind: GateKind::ImplementationReview,
+            verdict: GateVerdict::Approved, reviewer_id: "bob".to_string(),
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::LintCheck));
+
+        // Lint passes → Done.
+        append(root, &mut seq, FactoryEvent::TddCheckResult {
+            work_item_id: wid.clone(), check_name: "lint".to_string(),
+            passed: true, first_error: None,
+        }, &mut state);
+        assert_eq!(state.dev_states.get(&wid).and_then(|d| d.current_phase()), Some(&TddPhase::Done));
+
+        append(root, &mut seq, FactoryEvent::TddSliceDone { work_item_id: wid.clone() }, &mut state);
+        append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
+
+        let item = state.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(item.status, WorkItemStatus::Done, "emc-ingested slice must reach Done via M2 TDD machinery");
+
+        // Second slice is still ready.
+        let wid2 = work_item_ids[1].clone();
+        let item2 = state.work_items.iter().find(|i| i.id == wid2).unwrap();
+        assert_eq!(item2.status, WorkItemStatus::Ready);
+
+        // Restart durability: replay events and verify the completed slice is Done.
+        let replayed = load_project_state(root).unwrap().unwrap();
+        let replayed_item = replayed.work_items.iter().find(|i| i.id == wid).unwrap();
+        assert_eq!(replayed_item.status, WorkItemStatus::Done, "M3 completed slice survives restart");
+        assert_eq!(replayed_item.emc_slug.as_deref(), Some("add-command"), "emc_slug preserved through replay");
+    }
+}

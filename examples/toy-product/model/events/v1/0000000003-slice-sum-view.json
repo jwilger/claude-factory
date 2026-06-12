@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "event_id": "a1b2c3d4-0003-0000-0000-000000000003",
+  "stream_id": "toy-product-model",
+  "type": "SliceAdded",
+  "payload": {
+    "workflow": "addition",
+    "slug": "sum-view",
+    "name": "Sum View",
+    "kind": "state_view",
+    "description": "Projects AdditionPerformed events into a SumResult read model returning the most recent computed sum."
+  }
+}
