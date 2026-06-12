@@ -440,6 +440,35 @@ any other `cf_*` tool. Returns the new project ID.")]
         apply_event(&mut project_state, &envelope.payload);
         guard.project = Some(project_state);
 
+        // Set up project-local Claude Code settings with conductor defaults.
+        let claude_dir = root.join(".claude");
+        let settings_path = claude_dir.join("settings.json");
+
+        std::fs::create_dir_all(&claude_dir)
+            .map_err(|e| McpError::internal_error(format!("failed to create .claude directory: {e}"), None))?;
+
+        // Read existing settings or start with empty object.
+        let mut settings: serde_json::Value = if settings_path.exists() {
+            std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        // Set conductor defaults.
+        if let Some(obj) = settings.as_object_mut() {
+            obj.insert("model".to_string(), serde_json::json!("haiku"));
+            obj.insert("advisor".to_string(), serde_json::json!("fable"));
+        }
+
+        // Write back with formatting.
+        let formatted = serde_json::to_string_pretty(&settings)
+            .map_err(|e| McpError::internal_error(format!("failed to serialize settings: {e}"), None))?;
+        std::fs::write(&settings_path, formatted)
+            .map_err(|e| McpError::internal_error(format!("failed to write .claude/settings.json: {e}"), None))?;
+
         content_json(&serde_json::json!({
             "project_id": project_id.to_string(),
             "root": root.display().to_string(),
