@@ -1,0 +1,9 @@
+{
+  "id": "ec4cb989-590b-4596-85f2-f0559701990b",
+  "sequence": 1,
+  "timestamp": "2026-06-12T02:13:47.197Z",
+  "payload": {
+    "type": "project_initialized",
+    "id": "f23f28aa-120a-4b9a-a814-d62c24b92636"
+  }
+}

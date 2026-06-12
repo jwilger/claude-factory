@@ -5,7 +5,7 @@
 # (passed as cwd in the JSON stdin context) and prints a one-line factory
 # dashboard. Outputs nothing if this is not a factory-initialized repo.
 #
-# Output format: [CF] Dev:N Rev:N Disc:N Arch:N Des:N | blocked:N
+# Output format: [CF] Dev:N Rev:N Disc:N Arch:N Des:N | N active
 #
 # Designed to be lightweight — reads files directly without starting cfk.
 
@@ -29,6 +29,8 @@ EVENT_DIR="$CWD/.claude-factory/events/v1"
 [[ -d "$EVENT_DIR" ]] || exit 0
 
 # Count work items by phase and status from the event log.
+# Phase values are serde snake_case from PhaseKind: discovery, event_modeling,
+# architecture, design_system, development, review.
 python3 - "$EVENT_DIR" <<'PYEOF'
 import json, os, sys, glob
 
@@ -44,52 +46,51 @@ for path in files:
     except Exception:
         continue
     payload = env.get("payload", {})
-    kind = payload.get("type") or list(payload.keys())[0] if payload else None
+    ptype = payload.get("type", "")
 
-    # Detect by known keys since events are tagged structs.
-    if "WorkItemAdded" in payload:
-        wi = payload["WorkItemAdded"]["work_item"]
-        items[wi["id"]] = {"phase": wi.get("phase", "?"), "status": "Ready"}
-    elif "LeaseGranted" in payload:
-        wid = payload["LeaseGranted"]["lease"]["work_item_id"]
+    if ptype == "work_item_added":
+        wi = payload["work_item"]
+        items[wi["id"]] = {"phase": wi.get("phase", "?"), "status": wi.get("status", "ready")}
+    elif ptype == "lease_granted":
+        wid = payload["lease"]["work_item_id"]
         if wid in items:
-            items[wid]["status"] = "InProgress"
-    elif "LeaseReleased" in payload:
-        wid = payload["LeaseReleased"]["work_item_id"]
+            items[wid]["status"] = "in_progress"
+    elif ptype == "lease_released":
+        wid = payload["work_item_id"]
         if wid in items:
-            items[wid]["status"] = "Ready"
-    elif "WorkItemCompleted" in payload:
-        wid = payload["WorkItemCompleted"]["work_item_id"]
+            items[wid]["status"] = "ready"
+    elif ptype == "work_item_completed":
+        wid = payload["work_item_id"]
         if wid in items:
-            items[wid]["status"] = "Done"
-    elif "WorkItemAbandoned" in payload:
-        wid = payload["WorkItemAbandoned"]["work_item_id"]
+            items[wid]["status"] = "done"
+    elif ptype == "work_item_abandoned":
+        wid = payload["work_item_id"]
         if wid in items:
-            items[wid]["status"] = "Abandoned"
+            items[wid]["status"] = "abandoned"
 
-# Count by phase for active (not Done/Abandoned) items.
+# Count by phase for active (not done/abandoned) items.
 phase_counts = {}
 active_total = 0
 for item in items.values():
-    if item["status"] in ("Done", "Abandoned"):
+    if item["status"] in ("done", "abandoned"):
         continue
     phase = item["phase"]
     phase_counts[phase] = phase_counts.get(phase, 0) + 1
     active_total += 1
 
-if active_total == 0 and not items:
-    # No work items at all — freshly initialized.
+if not items:
+    # Initialized but no work items yet.
     print("[CF] initialized")
     sys.exit(0)
 
-# Map phase kinds to short labels.
+# Map serde snake_case phase names to short display labels.
 labels = {
-    "Development": "Dev",
-    "Review": "Rev",
-    "Discovery": "Disc",
-    "Architecture": "Arch",
-    "Design": "Des",
-    "EventModeling": "EMC",
+    "development": "Dev",
+    "review": "Rev",
+    "discovery": "Disc",
+    "architecture": "Arch",
+    "design_system": "Des",
+    "event_modeling": "EMC",
 }
 
 parts = []

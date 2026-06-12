@@ -1,0 +1,17 @@
+{
+  "id": "9dd0b4db-4f32-4dc2-8aac-9e4ad84c0327",
+  "sequence": 4,
+  "timestamp": "2026-06-12T02:13:47.197Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "a561c8a4-c044-4fe1-b463-63f1c865205f",
+      "phase": "development",
+      "work_type": "outer_behavioral_test_writing",
+      "status": "ready",
+      "description": "cf_status: structured output \u2014 return a typed StatusSummary (phase \u2192 {ready, in_progress, done, abandoned} counts) instead of a raw text blob, so the conductor can render a consistent dashboard regardless of kernel version.",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}
