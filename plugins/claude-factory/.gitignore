@@ -1,2 +1,3 @@
-# Built kernel binary and build-hash file produced by bootstrap-cfk.sh
-.bin/
+# Exclude build artifacts but keep the pre-built binary for plugin distribution
+.bin/*
+!.bin/cfk
