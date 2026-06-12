@@ -72,6 +72,7 @@
             echo "  quint:      $(quint --version 2>/dev/null | head -1 || echo 'available via npx on first use')"
             echo "  jq:         $(jq --version 2>/dev/null || echo 'not found')"
             echo ""
+            git config core.hooksPath .githooks 2>/dev/null || true
             echo "  Run 'cargo build' in kernel/ to build cfk."
             echo "  See docs/SETUP.md for toolchain details and non-Nix setup."
             echo ""
