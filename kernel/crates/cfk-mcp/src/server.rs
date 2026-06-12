@@ -55,16 +55,14 @@ pub struct InitParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PhaseFilterParams {
-    /// Restrict to a specific phase. Accepted values: `discovery`,
-    /// `event_modeling`, `architecture`, `design_system`, `development`,
-    /// `review`.
-    pub phase: Option<String>,
+    /// Restrict results to a specific phase.
+    pub phase: Option<PhaseKind>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct NextStepParams {
     /// Optional phase filter.
-    pub phase: Option<String>,
+    pub phase: Option<PhaseKind>,
     /// Session identity for this conductor session (used for auto-claiming
     /// development work items). Required when development items are present.
     pub session_identity: Option<String>,
@@ -111,9 +109,9 @@ pub struct GateParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct BacklogAddParams {
     /// Phase for this work item.
-    pub phase: String,
+    pub phase: PhaseKind,
     /// Work type.
-    pub work_type: String,
+    pub work_type: WorkType,
     /// Human-readable description of the work.
     pub description: String,
 }
@@ -336,33 +334,14 @@ fn tool_error(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg)])
 }
 
-fn parse_phase(s: &str) -> Option<PhaseKind> {
-    match s {
-        "discovery" => Some(PhaseKind::Discovery),
-        "event_modeling" => Some(PhaseKind::EventModeling),
-        "architecture" => Some(PhaseKind::Architecture),
-        "design_system" => Some(PhaseKind::DesignSystem),
-        "development" => Some(PhaseKind::Development),
-        "review" => Some(PhaseKind::Review),
-        _ => None,
-    }
-}
-
-fn parse_work_type(s: &str) -> Option<WorkType> {
-    match s {
-        "socratic_discovery" => Some(WorkType::SocraticDiscovery),
-        "event_model_authoring" => Some(WorkType::EventModelAuthoring),
-        "adr_drafting" => Some(WorkType::AdrDrafting),
-        "adr_review" => Some(WorkType::AdrReview),
-        "design_system_build" => Some(WorkType::DesignSystemBuild),
-        "outer_behavioral_test_writing" => Some(WorkType::OuterBehavioralTestWriting),
-        "test_review" => Some(WorkType::TestReview),
-        "narrowest_step_implementation" => Some(WorkType::NarrowestStepImplementation),
-        "implementation_review" => Some(WorkType::ImplementationReview),
-        "mechanical_transform" => Some(WorkType::MechanicalTransform),
-        "pr_comment_triage" => Some(WorkType::PrCommentTriage),
-        "research" => Some(WorkType::Research),
-        _ => None,
+fn command_error(e: &CommandError) -> McpError {
+    // Routing is always a kernel misconfiguration, not a caller mistake.
+    // All other variants indicate an invalid call sequence or bad params.
+    let msg = e.to_string();
+    if matches!(e, CommandError::Routing(_)) {
+        McpError::internal_error(msg, None)
+    } else {
+        McpError::invalid_params(msg, None)
     }
 }
 
@@ -434,11 +413,9 @@ any other `cf_*` tool. Returns the new project ID.")]
         )
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
+        let mut project_state = project_state;
+        apply_event(&mut project_state, &envelope.payload);
         guard.project = Some(project_state);
-        apply_event(
-            guard.project.as_mut().expect("just set above"),
-            &envelope.payload,
-        );
 
         content_json(&serde_json::json!({
             "project_id": project_id.to_string(),
@@ -495,7 +472,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
             return Ok(tool_error("Project not initialized. Run `cf_init` first."));
         };
 
-        let phase_filter = params.phase.as_deref().and_then(parse_phase);
+        let phase_filter = params.phase;
 
         // Auto-claim ready development items if session_identity is provided.
         if let Some(ref session_id) = params.session_identity {
@@ -512,7 +489,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
 
             if let Some(wid) = ready_dev {
                 let lease = handle_claim(proj, &wid, session_id)
-                    .map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
+                    .map_err(|e| command_error(&e))?;
 
                 guard
                     .emit(FactoryEvent::LeaseGranted { lease })
@@ -530,9 +507,10 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
             }
         }
 
-        let proj = guard.project.as_ref().expect("checked above");
+        let proj = guard.project.as_ref()
+            .ok_or_else(|| McpError::internal_error("project state lost during auto-claim", None))?;
         let response = handle_next_step(proj, phase_filter)
-            .map_err(|e: CommandError| McpError::internal_error(e.to_string(), None))?;
+            .map_err(|e| command_error(&e))?;
 
         content_json(&serde_json::to_value(&response).map_err(|e| {
             McpError::internal_error(format!("serialization error: {e}"), None)
@@ -555,7 +533,7 @@ release it on completion or failure.")]
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
         let lease = handle_claim(proj, &work_item_id, &params.session_identity)
-            .map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
+            .map_err(|e| command_error(&e))?;
 
         let lease_id_str = lease.id.to_string();
         let granted_at = lease.granted_at;
@@ -831,7 +809,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
             (gk, ok, is_adr, adr_info)
         };
 
-        reviewer_ok.map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
+        reviewer_ok.map_err(|e| command_error(&e))?;
 
         let verdict = match params.verdict.as_str() {
             "approved" => GateVerdict::Approved,
@@ -855,7 +833,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
         if is_adr_gate {
             let accepted = verdict.is_approved();
             let (adr_id_opt, project_root) = adr_id_and_root
-                .expect("adr gate always has adr_info");
+                .ok_or_else(|| McpError::internal_error("ADR gate has no adr_info", None))?;
             let adr_id = adr_id_opt.ok_or_else(|| {
                 McpError::internal_error("ADR has no ID yet", None)
             })?;
@@ -932,7 +910,7 @@ List all work items in the backlog, optionally filtered by phase.")]
             return Ok(tool_error("Project not initialized."));
         };
 
-        let phase_filter = params.phase.as_deref().and_then(parse_phase);
+        let phase_filter = params.phase;
 
         let items: Vec<WorkItemSummary> = proj
             .work_items
@@ -961,18 +939,10 @@ Add a work item to the backlog. \
             return Ok(tool_error("Project not initialized."));
         }
 
-        let phase = parse_phase(&params.phase).ok_or_else(|| {
-            McpError::invalid_params(format!("unknown phase: {}", params.phase), None)
-        })?;
-
-        let work_type = parse_work_type(&params.work_type).ok_or_else(|| {
-            McpError::invalid_params(format!("unknown work_type: {}", params.work_type), None)
-        })?;
-
         let item = WorkItem::new(
             cfk_core::types::ids::WorkItemId::new(),
-            phase,
-            work_type,
+            params.phase,
+            params.work_type,
             params.description,
         );
 

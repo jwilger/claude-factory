@@ -5,6 +5,8 @@
 //! return values. No mock libraries; forge double + tempdir only.
 
 use cfk_core::types::forge::{CiStatus, PrPollResult};
+use cfk_core::types::phase::PhaseKind;
+use cfk_core::types::routing::WorkType;
 use cfk_engine::forge::{MemoryForge, PollScript};
 use cfk_mcp::server::{
     BacklogAddParams, ClaimParams, CfkServer, GateParams, InitParams, NextStepParams, PrMergeParams,
@@ -141,8 +143,8 @@ async fn tdd_slice_claim_submit_test_gate_approve() {
     // Add a development work item.
     let add_result = server
         .cf_backlog_add(Parameters(BacklogAddParams {
-            phase: "development".to_string(),
-            work_type: "outer_behavioral_test_writing".to_string(),
+            phase: PhaseKind::Development,
+            work_type: WorkType::OuterBehavioralTestWriting,
             description: "Implement user login".to_string(),
         }))
         .await
@@ -152,7 +154,7 @@ async fn tdd_slice_claim_submit_test_gate_approve() {
     // cf_next_step with session_identity auto-claims and starts TDD slice.
     let next_result = server
         .cf_next_step(Parameters(NextStepParams {
-            phase: Some("development".to_string()),
+            phase: Some(PhaseKind::Development),
             session_identity: Some("alice".to_string()),
         }))
         .await
@@ -212,8 +214,8 @@ async fn pr_poll_merge_lifecycle() {
     // Add a review-phase work item.
     let add_result = server
         .cf_backlog_add(Parameters(BacklogAddParams {
-            phase: "review".to_string(),
-            work_type: "pr_comment_triage".to_string(),
+            phase: PhaseKind::Review,
+            work_type: WorkType::PrCommentTriage,
             description: "Review PR for user login".to_string(),
         }))
         .await
@@ -314,24 +316,13 @@ async fn invalid_work_item_uuid_returns_mcp_error() {
     assert!(result.is_err(), "non-UUID work_item_id should return McpError");
 }
 
-#[tokio::test]
-async fn invalid_phase_string_returns_tool_error() {
-    let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
-    init_project(&server, &dir).await;
-
-    // cf_backlog_add raises McpError::invalid_params for unknown phase strings.
-    let add_result = server
-        .cf_backlog_add(Parameters(BacklogAddParams {
-            phase: "nonexistent_phase".to_string(),
-            work_type: "outer_behavioral_test_writing".to_string(),
-            description: "Does not matter".to_string(),
-        }))
-        .await;
-    assert!(
-        add_result.is_err() || is_error(add_result.as_ref().unwrap()),
-        "invalid phase string should produce an error"
-    );
+#[test]
+fn invalid_phase_string_rejected_at_deserialization() {
+    // BacklogAddParams.phase is now PhaseKind; serde rejects unknown variants
+    // before the handler ever runs — no server needed.
+    let json = r#"{"phase":"nonexistent_phase","work_type":"outer_behavioral_test_writing","description":"test"}"#;
+    let result = serde_json::from_str::<BacklogAddParams>(json);
+    assert!(result.is_err(), "unknown phase should fail JSON deserialization");
 }
 
 #[tokio::test]
@@ -343,8 +334,8 @@ async fn gate_with_same_author_and_reviewer_returns_error() {
     // Add and auto-claim a development item.
     server
         .cf_backlog_add(Parameters(BacklogAddParams {
-            phase: "development".to_string(),
-            work_type: "outer_behavioral_test_writing".to_string(),
+            phase: PhaseKind::Development,
+            work_type: WorkType::OuterBehavioralTestWriting,
             description: "Some work".to_string(),
         }))
         .await
@@ -352,7 +343,7 @@ async fn gate_with_same_author_and_reviewer_returns_error() {
 
     let next = server
         .cf_next_step(Parameters(NextStepParams {
-            phase: Some("development".to_string()),
+            phase: Some(PhaseKind::Development),
             session_identity: Some("alice".to_string()),
         }))
         .await

@@ -1,10 +1,11 @@
 //! Routing table types — maps work types to executor specifications.
 
 use nutype::nutype;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The category of work, used to look up the executor in the routing table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkType {
     SocraticDiscovery,

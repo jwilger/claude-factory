@@ -19,5 +19,6 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tera = { workspace = true }
+schemars = { workspace = true }
 
 [dev-dependencies]
