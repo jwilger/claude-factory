@@ -11,4 +11,8 @@ if [[ ! -x "${CFW_BIN}" ]]; then
   exit 1
 fi
 
-exec "${CFW_BIN}" mcp stdio
+# cfk takes the product-repo root as its first positional argument (see
+# kernel/crates/cfk-mcp/src/main.rs). Claude Code launches plugin MCP servers
+# with the project directory as CWD and exports CLAUDE_PROJECT_DIR; prefer the
+# explicit env var and fall back to CWD.
+exec "${CFW_BIN}" "${CLAUDE_PROJECT_DIR:-$PWD}"
