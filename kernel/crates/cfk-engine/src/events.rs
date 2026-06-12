@@ -11,8 +11,10 @@ use crate::store::event_export_dir;
 use cfk_core::{
     state_machine::work_item::WorkItem,
     types::{
+        gate::{GateKind, GateVerdict},
         ids::{LeaseId, ProjectId, WorkItemId},
         lease::Lease,
+        tdd::TddPhase,
     },
 };
 use chrono::{DateTime, Utc};
@@ -39,6 +41,50 @@ pub enum FactoryEvent {
     WorkItemCompleted { work_item_id: WorkItemId },
     /// A work item was abandoned (superseded or cancelled).
     WorkItemAbandoned { work_item_id: WorkItemId },
+
+    // ── TDD slice events ─────────────────────────────────────────────────
+    /// A development slice was claimed and its TDD cycle started.
+    TddSliceStarted {
+        work_item_id: WorkItemId,
+        author_identity: String,
+    },
+    /// The TDD frame advanced to a new phase.
+    TddPhaseAdvanced {
+        work_item_id: WorkItemId,
+        frame_depth: u32,
+        new_phase: TddPhase,
+    },
+    /// Test-writer agent submitted test code.
+    TddTestSubmitted {
+        work_item_id: WorkItemId,
+        frame_depth: u32,
+        test_content: String,
+        author_identity: String,
+    },
+    /// A gate reviewer recorded a verdict.
+    TddGateVerdict {
+        work_item_id: WorkItemId,
+        gate_kind: GateKind,
+        verdict: GateVerdict,
+        reviewer_id: String,
+    },
+    /// The kernel ran a check and recorded the result.
+    TddCheckResult {
+        work_item_id: WorkItemId,
+        check_name: String,
+        passed: bool,
+        first_error: Option<String>,
+    },
+    /// A drill-down frame was pushed (implementer needs tighter unit test).
+    TddDrillDownPushed {
+        work_item_id: WorkItemId,
+        child_description: String,
+        child_depth: u32,
+    },
+    /// The innermost drill-down frame completed; parent resumes.
+    TddDrillDownPopped { work_item_id: WorkItemId },
+    /// All TDD frames complete; slice is done (work item proceeds to commit).
+    TddSliceDone { work_item_id: WorkItemId },
 }
 
 /// A persisted event with metadata.

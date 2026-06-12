@@ -3,6 +3,14 @@
 use nutype::nutype;
 use serde::{Deserialize, Serialize};
 
+/// Which review gate a verdict belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateKind {
+    TestReview,
+    ImplementationReview,
+}
+
 /// A human-readable explanation of why a gate was vetoed.
 #[nutype(
     sanitize(trim),

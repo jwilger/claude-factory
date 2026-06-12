@@ -1,0 +1,11 @@
+# Checks configuration for toy-product.
+# The cfk kernel runs these commands itself — agents never self-report pass/fail.
+
+[checks.tests]
+command = "cargo nextest run"
+
+[checks.lint]
+command = "cargo clippy -- -D warnings"
+
+[checks.build]
+command = "cargo build"

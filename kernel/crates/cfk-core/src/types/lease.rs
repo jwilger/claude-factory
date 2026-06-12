@@ -21,7 +21,7 @@ pub struct Lease {
 #[nutype::nutype(
     sanitize(trim),
     validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)
+    derive(Debug, Display, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)
 )]
 pub struct SessionIdentity(String);
 

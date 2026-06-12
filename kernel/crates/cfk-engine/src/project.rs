@@ -7,10 +7,11 @@
 use cfk_core::{
     state_machine::work_item::{WorkItem, WorkItemStatus},
     types::{
-        ids::ProjectId,
+        ids::{ProjectId, WorkItemId},
         lease::Lease,
         phase::PhaseKind,
         routing::RoutingTable,
+        tdd::DevSliceState,
     },
 };
 use std::collections::HashMap;
@@ -24,6 +25,8 @@ pub struct ProjectState {
     pub routing: RoutingTable,
     pub work_items: Vec<WorkItem>,
     pub leases: Vec<Lease>,
+    /// TDD state for each in-progress development slice.
+    pub dev_states: HashMap<WorkItemId, DevSliceState>,
     /// Which phases are active (initialized).
     pub active_phases: Vec<PhaseKind>,
 }
@@ -38,6 +41,7 @@ impl ProjectState {
             routing,
             work_items: Vec::new(),
             leases: Vec::new(),
+            dev_states: HashMap::new(),
             active_phases: PhaseKind::all().to_vec(),
         }
     }

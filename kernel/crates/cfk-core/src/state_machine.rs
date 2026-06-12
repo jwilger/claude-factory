@@ -7,6 +7,7 @@
 //! are implemented in M2 (development slice) and M5 (all phases).
 //! M1 only needs enough to support the `cf_next_step` round-trip.
 
+pub mod tdd;
 pub mod work_item;
 
 pub use work_item::{WorkItem, WorkItemState, WorkItemError};

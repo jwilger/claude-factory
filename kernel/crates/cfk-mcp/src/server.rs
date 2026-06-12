@@ -3,17 +3,21 @@
 use cfk_core::{
     state_machine::work_item::{WorkItem, WorkItemStatus},
     types::{
+        gate::{GateKind, GateVerdict, VetoReason},
         ids::WorkItemId,
         phase::PhaseKind,
         routing::WorkType,
+        tdd::TddPhase,
     },
 };
 use cfk_engine::{
-    commands::{CommandError, handle_claim, handle_next_step},
+    checks::load_checks,
+    commands::{CommandError, handle_claim, handle_next_step, validate_gate_verdict},
     config::default_routing_table,
     events::{FactoryEvent, append_event},
     loader::{apply_event, load_project_state},
     project::ProjectState,
+    runner::run_check,
 };
 use rmcp::{
     ErrorData as McpError,
@@ -29,9 +33,6 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 // ── Tool parameter types ────────────────────────────────────────────────────
-//
-// Use primitive Rust types only — nutype newtypes don't implement `JsonSchema`.
-// IDs arrive as strings and are parsed inside each handler.
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InitParams {
@@ -46,6 +47,15 @@ pub struct PhaseFilterParams {
     /// `event_modeling`, `architecture`, `design_system`, `development`,
     /// `review`.
     pub phase: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NextStepParams {
+    /// Optional phase filter.
+    pub phase: Option<String>,
+    /// Session identity for this conductor session (used for auto-claiming
+    /// development work items). Required when development items are present.
+    pub session_identity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -64,21 +74,33 @@ pub struct WorkItemIdParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SubmitParams {
-    /// The `work_item_id` returned by the original `cf_next_step` call.
+    /// The `work_item_id` of the item being submitted.
     pub work_item_id: String,
-    /// Free-form result text or JSON from the executor.
-    pub result: String,
+    /// Phase-specific result data (JSON).
+    ///
+    /// For `WriteTest`: `{"test_content": "..."}`.
+    /// For `Implement`: `{"drill_down_description": null | "..."}`.
+    /// For other phases: any value (recorded as evidence).
+    pub result: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GateParams {
+    /// The `work_item_id` under review.
+    pub work_item_id: String,
+    /// Session identity of the reviewer (must differ from the work item author).
+    pub reviewer_id: String,
+    /// `"approved"` or `"vetoed"`.
+    pub verdict: String,
+    /// Required when `verdict` is `"vetoed"`. Explains why.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct BacklogAddParams {
-    /// Phase for this work item: `discovery`, `event_modeling`, `architecture`,
-    /// `design_system`, `development`, or `review`.
+    /// Phase for this work item.
     pub phase: String,
-    /// Work type: `socratic_discovery`, `event_model_authoring`, `adr_drafting`,
-    /// `outer_behavioral_test_writing`, `test_review`,
-    /// `narrowest_step_implementation`, `implementation_review`,
-    /// `mechanical_transform`, `pr_comment_triage`, or `research`.
+    /// Work type.
     pub work_type: String,
     /// Human-readable description of the work.
     pub description: String,
@@ -86,8 +108,11 @@ pub struct BacklogAddParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RunCheckParams {
-    /// Name of the configured check to run.
+    /// Name of the configured check to run (e.g. `tests`, `lint`).
     pub check_name: String,
+    /// Work item that this check result belongs to (if any).
+    /// When provided, the kernel advances the TDD state machine.
+    pub work_item_id: Option<String>,
 }
 
 // ── Response types ─────────────────────────────────────────────────────────
@@ -126,11 +151,7 @@ struct ServerState {
 
 impl ServerState {
     fn new(project_root: PathBuf, project: Option<ProjectState>, event_sequence: u64) -> Self {
-        Self {
-            project_root,
-            project,
-            event_sequence,
-        }
+        Self { project_root, project, event_sequence }
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -244,6 +265,19 @@ fn parse_work_item_id(s: &str) -> Result<WorkItemId, McpError> {
         .map_err(|_| McpError::invalid_params("invalid work_item_id", None))
 }
 
+fn tdd_phase_label(phase: &TddPhase) -> &'static str {
+    match phase {
+        TddPhase::WriteTest => "write_test",
+        TddPhase::TestReviewGate => "test_review_gate",
+        TddPhase::RedCheck => "red_check",
+        TddPhase::Implement => "implement",
+        TddPhase::CheckProgress => "check_progress",
+        TddPhase::ImplReviewGate => "impl_review_gate",
+        TddPhase::LintCheck => "lint_check",
+        TddPhase::Done => "done",
+    }
+}
+
 // ── Tool implementations ─────────────────────────────────────────────────
 
 #[tool_router]
@@ -273,9 +307,7 @@ any other `cf_*` tool. Returns the new project ID.")]
         let envelope = append_event(
             &root,
             seq,
-            FactoryEvent::ProjectInitialized {
-                id: project_id.clone(),
-            },
+            FactoryEvent::ProjectInitialized { id: project_id.clone() },
         )
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -326,21 +358,54 @@ Shows ready / in_progress / blocked / done for each phase.")]
     }
 
     #[tool(description = "\
-Return the next work step for the conductor to execute. \
-The response includes `step_id`, `work_item_id`, `action` \
-(`spawn_agent` / `run_check` / `ask_human` / `idle`), `executor` spec, \
-and `prompt`. When `action` is `idle`, no work is currently ready.")]
+Return the next work step for the conductor to execute. For development-phase \
+items, the step is TDD-phase-specific. The response `status` is `ready` or \
+`idle`. When `ready`, `action.type` is one of: `spawn_agent`, `run_check`, \
+`gate_review`. When `action.type` is `run_check`, call `cf_run_check`. When \
+`action.type` is `gate_review`, run the reviewer agent then call `cf_gate`.")]
     async fn cf_next_step(
         &self,
-        Parameters(params): Parameters<PhaseFilterParams>,
+        Parameters(params): Parameters<NextStepParams>,
     ) -> Result<CallToolResult, McpError> {
-        let guard = self.state.read().await;
+        let mut guard = self.state.write().await;
         let Some(ref proj) = guard.project else {
             return Ok(tool_error("Project not initialized. Run `cf_init` first."));
         };
 
         let phase_filter = params.phase.as_deref().and_then(parse_phase);
 
+        // Auto-claim ready development items if session_identity is provided.
+        if let Some(ref session_id) = params.session_identity {
+            // Find the first ready development item (in phase order).
+            let ready_dev: Option<WorkItemId> = proj
+                .work_items
+                .iter()
+                .find(|i| {
+                    i.phase == PhaseKind::Development
+                        && i.status == WorkItemStatus::Ready
+                        && phase_filter.is_none_or(|p| i.phase == p)
+                })
+                .map(|i| i.id.clone());
+
+            if let Some(wid) = ready_dev {
+                let lease = handle_claim(proj, &wid, session_id)
+                    .map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
+
+                guard
+                    .emit(FactoryEvent::LeaseGranted { lease })
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                // Start TDD slice state.
+                guard
+                    .emit(FactoryEvent::TddSliceStarted {
+                        work_item_id: wid,
+                        author_identity: session_id.clone(),
+                    })
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
+        }
+
+        let proj = guard.project.as_ref().expect("checked above");
         let response = handle_next_step(proj, phase_filter)
             .map_err(|e: CommandError| McpError::internal_error(e.to_string(), None))?;
 
@@ -417,51 +482,212 @@ The item returns to `Ready` status and can be claimed again.")]
         };
 
         guard
-            .emit(FactoryEvent::LeaseReleased {
-                lease_id,
-                work_item_id,
-            })
+            .emit(FactoryEvent::LeaseReleased { lease_id, work_item_id })
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({ "released": params.work_item_id }))
     }
 
     #[tool(description = "\
-Submit the result of a step. In M1 this marks the work item as `Done`. \
-Full gate validation (test review, implementation review, lint) is enforced \
-from M2 onward.")]
+Submit the result of a step, advancing the TDD state machine.\n\n\
+For `WriteTest` phase: `result` must be `{\"test_content\": \"<code>\"}`.\n\
+For `Implement` phase: `result` may include `{\"drill_down_description\": \"<desc>\"}`\n\
+if the error requires a tighter unit test; omit or set to null otherwise.\n\
+For other phases: any JSON value is accepted as evidence.")]
     async fn cf_submit(
         &self,
         Parameters(params): Parameters<SubmitParams>,
     ) -> Result<CallToolResult, McpError> {
-        let mut guard = self.state.write().await;
-        let Some(ref proj) = guard.project else {
-            return Ok(tool_error("Project not initialized."));
-        };
-
         let work_item_id = parse_work_item_id(&params.work_item_id)?;
 
-        let found = proj
-            .work_items
-            .iter()
-            .any(|i| i.id == work_item_id && i.status == WorkItemStatus::InProgress);
+        // Extract state into owned values to release the immutable borrow before emit.
+        let (current_tdd_phase, item_status, author_identity, frame_depth) = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
 
-        if !found {
-            return Ok(tool_error(format!(
-                "work item {} is not in progress",
-                params.work_item_id
-            )));
+            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+
+            let status = proj.work_items.iter()
+                .find(|i| i.id == work_item_id)
+                .map(|i| i.status);
+
+            let phase = proj.dev_states.get(&work_item_id)
+                .and_then(|d| d.current_phase()).cloned();
+
+            let author = proj.leases.iter()
+                .find(|l| l.work_item_id == work_item_id)
+                .map_or_else(|| "unknown".to_string(), |l| l.session_identity.to_string());
+
+            let depth = proj.dev_states.get(&work_item_id)
+                .and_then(|d| d.current_frame()).map_or(0, |f| f.depth);
+
+            (phase, status, author, depth)
+        };
+
+        let mut guard = self.state.write().await;
+
+        match current_tdd_phase {
+            Some(TddPhase::WriteTest) => {
+                let test_content = params
+                    .result.get("test_content")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| McpError::invalid_params(
+                        "WriteTest submission must include {\"test_content\": \"...\"}",
+                        None,
+                    ))?.to_string();
+
+                guard.emit(FactoryEvent::TddTestSubmitted {
+                    work_item_id,
+                    frame_depth,
+                    test_content: test_content.clone(),
+                    author_identity,
+                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                content_json(&serde_json::json!({
+                    "work_item_id": params.work_item_id,
+                    "advanced_to": "test_review_gate",
+                    "test_content_length": test_content.len(),
+                }))
+            }
+
+            Some(TddPhase::Implement) => {
+                let drill_down = params.result.get("drill_down_description")
+                    .and_then(serde_json::Value::as_str).map(String::from);
+
+                if let Some(desc) = drill_down {
+                    guard.emit(FactoryEvent::TddDrillDownPushed {
+                        work_item_id,
+                        child_description: desc.clone(),
+                        child_depth: frame_depth + 1,
+                    }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                    return content_json(&serde_json::json!({
+                        "work_item_id": params.work_item_id,
+                        "advanced_to": "write_test",
+                        "drill_down_depth": frame_depth + 1,
+                        "description": desc,
+                    }));
+                }
+
+                guard.emit(FactoryEvent::TddPhaseAdvanced {
+                    work_item_id,
+                    frame_depth,
+                    new_phase: TddPhase::CheckProgress,
+                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                content_json(&serde_json::json!({
+                    "work_item_id": params.work_item_id,
+                    "advanced_to": "check_progress",
+                }))
+            }
+
+            Some(other) => {
+                content_json(&serde_json::json!({
+                    "work_item_id": params.work_item_id,
+                    "current_tdd_phase": tdd_phase_label(&other),
+                    "note": "Submission acknowledged; use cf_gate for gate verdicts.",
+                }))
+            }
+
+            None => {
+                if item_status != Some(WorkItemStatus::InProgress) {
+                    return Ok(tool_error(format!(
+                        "work item {} is not in progress",
+                        params.work_item_id
+                    )));
+                }
+                guard.emit(FactoryEvent::WorkItemCompleted { work_item_id })
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                content_json(&serde_json::json!({ "completed": params.work_item_id }))
+            }
         }
+    }
 
+    #[tool(description = "\
+Record a gate verdict (test review or implementation review). \
+The reviewer identity must differ from the work item's claiming session. \
+When vetoed, `reason` is required and the TDD cycle loops back. \
+When approved, the TDD cycle advances to the next phase.")]
+    async fn cf_gate(
+        &self,
+        Parameters(params): Parameters<GateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        // Extract state into owned values before taking the write lock for emit.
+        let (gate_kind, reviewer_ok) = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref()
+                .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
+
+            let current_phase = proj.dev_states.get(&work_item_id)
+                .and_then(|d| d.current_phase()).cloned();
+
+            let gk = match current_phase.as_ref() {
+                Some(TddPhase::TestReviewGate) => GateKind::TestReview,
+                Some(TddPhase::ImplReviewGate) => GateKind::ImplementationReview,
+                other => {
+                    return Ok(tool_error(format!(
+                        "work item {} is not at a gate (current TDD phase: {:?})",
+                        params.work_item_id, other
+                    )));
+                }
+            };
+
+            let ok = validate_gate_verdict(
+                proj, &work_item_id, &params.reviewer_id, gk, &GateVerdict::Approved,
+            );
+            (gk, ok)
+        };
+
+        reviewer_ok.map_err(|e: CommandError| McpError::invalid_params(e.to_string(), None))?;
+
+        let verdict = match params.verdict.as_str() {
+            "approved" => GateVerdict::Approved,
+            "vetoed" => {
+                let raw_reason = params.reason.clone().unwrap_or_default();
+                let reason = VetoReason::try_new(raw_reason).map_err(|_| {
+                    McpError::invalid_params(
+                        "vetoed verdict requires a non-empty `reason`",
+                        None,
+                    )
+                })?;
+                GateVerdict::Vetoed { reason }
+            }
+            other => {
+                return Ok(tool_error(format!(
+                    "invalid verdict '{other}': expected 'approved' or 'vetoed'"
+                )));
+            }
+        };
+
+        let new_phase = match (&gate_kind, &verdict) {
+            (GateKind::TestReview, GateVerdict::Approved) => TddPhase::RedCheck,
+            (GateKind::TestReview, GateVerdict::Vetoed { .. }) => TddPhase::WriteTest,
+            (GateKind::ImplementationReview, GateVerdict::Approved) => TddPhase::LintCheck,
+            (GateKind::ImplementationReview, GateVerdict::Vetoed { .. }) => TddPhase::Implement,
+        };
+
+        let new_phase_label = tdd_phase_label(&new_phase);
+
+        let mut guard = self.state.write().await;
         guard
-            .emit(FactoryEvent::WorkItemCompleted {
+            .emit(FactoryEvent::TddGateVerdict {
                 work_item_id: work_item_id.clone(),
+                gate_kind,
+                verdict,
+                reviewer_id: params.reviewer_id.clone(),
             })
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
-            "completed": params.work_item_id,
-            "result_length": params.result.len(),
+            "work_item_id": params.work_item_id,
+            "reviewer_id": params.reviewer_id,
+            "advanced_to": new_phase_label,
         }))
     }
 
@@ -549,16 +775,65 @@ Add a work item to the backlog. \
 Run a configured deterministic check (tests, linter, build) and record the \
 result as evidence. Agents never self-report pass/fail — the kernel always \
 runs checks itself.\n\n\
-**M1 stub**: returns a placeholder. Full implementation in M2.")]
+Provide `work_item_id` to advance the TDD state machine based on the result.")]
     async fn cf_run_check(
         &self,
         Parameters(params): Parameters<RunCheckParams>,
     ) -> Result<CallToolResult, McpError> {
-        content_json(&serde_json::json!({
+        let project_root = {
+            let guard = self.state.read().await;
+            guard.project_root.clone()
+        };
+
+        let checks = load_checks(&project_root)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let command = checks.command_for(&params.check_name).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("unknown check '{}' — configure it in .claude-factory/checks.toml or use a built-in (tests, lint, build)", params.check_name),
+                None,
+            )
+        })?;
+
+        let result = run_check(&command, &project_root)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        // Optionally advance TDD state machine.
+        if let Some(wid_str) = &params.work_item_id {
+            let work_item_id = parse_work_item_id(wid_str)?;
+
+            let mut guard = self.state.write().await;
+            guard
+                .emit(FactoryEvent::TddCheckResult {
+                    work_item_id,
+                    check_name: params.check_name.clone(),
+                    passed: result.passed,
+                    first_error: result.first_error.clone(),
+                })
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+
+        let tdd_phase = {
+            let guard = self.state.read().await;
+            params.work_item_id.as_deref()
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .and_then(|uuid| WorkItemId::try_new(uuid).ok())
+                .and_then(|wid| {
+                    guard.project.as_ref()?.dev_states.get(&wid)?.current_phase().map(tdd_phase_label)
+                })
+        };
+
+        let mut resp = serde_json::json!({
             "check_name": params.check_name,
-            "status": "stub",
-            "message": "cf_run_check is not yet implemented (M1 stub). Full implementation in M2.",
-        }))
+            "passed": result.passed,
+            "first_error": result.first_error,
+        });
+        if let Some(phase) = tdd_phase {
+            resp["advanced_tdd_phase_to"] = serde_json::Value::String(phase.to_string());
+        }
+
+        content_json(&resp)
     }
 }
 

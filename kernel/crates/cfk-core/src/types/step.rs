@@ -1,6 +1,7 @@
 //! Step types — the unit of work the kernel dispatches to the conductor.
 
 use crate::types::{
+    gate::GateKind,
     ids::{StepId, WorkItemId},
     phase::PhaseKind,
     routing::ExecutorSpec,
@@ -18,7 +19,7 @@ pub struct StepPrompt(String);
 
 /// The action the conductor must take for this step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum StepAction {
     /// Spawn an LLM agent with the given executor spec and prompt.
     SpawnAgent {
@@ -31,13 +32,16 @@ pub enum StepAction {
     RunCheck {
         check_name: CheckName,
     },
+    /// Spawn a reviewer agent; conductor must call `cf_gate` with the verdict.
+    /// The reviewer identity is enforced to differ from the work item author.
+    GateReview {
+        gate_kind: GateKind,
+        executor: ExecutorSpec,
+        prompt: StepPrompt,
+    },
     /// A human decision is needed before the step can proceed.
     AskHuman {
         question: HumanQuestion,
-    },
-    /// No work is currently ready. The conductor should display status and stop.
-    Idle {
-        reason: IdleReason,
     },
 }
 
