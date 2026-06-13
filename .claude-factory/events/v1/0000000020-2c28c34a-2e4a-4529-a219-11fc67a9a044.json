@@ -1,0 +1,17 @@
+{
+  "id": "2c28c34a-2e4a-4529-a219-11fc67a9a044",
+  "sequence": 20,
+  "timestamp": "2026-06-13T15:12:28.081967412Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "32de5c5a-eb42-4192-aad1-50a5bc72cbc3",
+      "phase": "architecture",
+      "work_type": "adr_drafting",
+      "status": "ready",
+      "description": "ADR: adopt eventcore 0.9 + eventcore-fs (git-mergeable JSONL) as cfk's single event store. Supersedes ADR 0008 (deferred eventcore migration), amends ADR 0009 concurrency rationale, and supersedes the planned snapshot ADR (c57429dc) since eventcore-fs resolves replay via read-time linearization. Eliminates SQLite, the operational-cache/export duality, and the reconciliation bug-class. Drafted in docs/decisions/0010-eventcore-fs-event-store.md.",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

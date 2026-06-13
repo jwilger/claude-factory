@@ -1,7 +1,7 @@
 # 0008 — M1 ships a hand-rolled JSON event log; eventcore deferred to M2
 
 **Date:** 2026-06-11  
-**Status:** Accepted
+**Status:** Superseded by ADR 0010 (eventcore 0.9 + eventcore-fs event store)
 
 ## Context
 

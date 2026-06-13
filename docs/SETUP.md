@@ -132,7 +132,12 @@ Verify:
 emc --version
 ```
 
-### 5. SQLite (for the cfk kernel)
+### 5. SQLite (optional — only for building emc from source)
+
+The cfk kernel no longer requires a system SQLite library: its event store is the
+file-based `eventcore-fs` adapter (see ADR 0010), which persists events as
+git-tracked JSONL files with no database. This section is retained only for users
+who build `emc` from source, since `emc` still uses the `eventcore-sqlite` adapter.
 
 **macOS**: included in the OS. No action needed.
 
@@ -173,7 +178,7 @@ sudo dnf install jq
 | lean / lake | `emc verify` — formal proof checking of event models |
 | quint | `emc verify` — behavioral verification of event models |
 | emc | Event modeling in product projects |
-| SQLite | cfk-engine's event store (eventcore-sqlite) |
+| SQLite | Optional — only to build `emc` from source (emc uses eventcore-sqlite). The cfk kernel uses the file-based eventcore-fs adapter (ADR 0010). |
 | jq | Shell scripts that process JSON (codex-runner.sh, bootstrap scripts) |
 
 ### What works without lean/lake and quint

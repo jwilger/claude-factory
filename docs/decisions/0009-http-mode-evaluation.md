@@ -1,6 +1,6 @@
 # ADR 0009 — stdio-first kernel transport; HTTP mode deferred
 
-**Status:** Accepted  
+**Status:** Accepted (concurrency rationale in the Decision section amended by ADR 0010; the stdio transport decision stands)  
 **Date:** 2026-06-11  
 **Supersedes:** —  
 **Superseded by:** —

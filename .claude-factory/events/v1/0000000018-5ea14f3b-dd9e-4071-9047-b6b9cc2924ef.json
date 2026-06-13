@@ -1,0 +1,17 @@
+{
+  "id": "5ea14f3b-dd9e-4071-9047-b6b9cc2924ef",
+  "sequence": 18,
+  "timestamp": "2026-06-12T23:38:12.951890954Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "14ca33b4-9223-4000-9d1c-73f68a492a06",
+      "phase": "development",
+      "work_type": "outer_behavioral_test_writing",
+      "status": "ready",
+      "description": "Architecture state machine: a rejected/vetoed ADR must NOT complete the work item. Current behavior (observed 2026-06-12, events seq 12-13): adr_decided(accepted=false) immediately emits work_item_completed, wedging the item — the revised ADR resubmission (seq 15) was accepted as adr_drafted against a completed item and orphaned with no review gate ever scheduled. Required behavior: on rejection of completeness, loop back to drafting (like TDD gates); on final human rejection of the decision, record the ADR as Rejected in the registry (rejected decisions are kept as history, never deleted) and complete the item. Additionally cf_adr_submit must reject submissions against completed work items.",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}
