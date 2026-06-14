@@ -1,0 +1,17 @@
+{
+  "id": "c13a3c2c-4143-4a74-a71f-9b5db053fd4d",
+  "sequence": 176,
+  "timestamp": "2026-06-13T17:50:39.230719020Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "dfc3743e-32eb-439b-a264-e4f6ae008b53",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: snapshot-accelerated loader",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

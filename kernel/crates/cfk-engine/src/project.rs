@@ -86,9 +86,9 @@ impl ProjectState {
             match item.status {
                 WorkItemStatus::Ready => c.ready += 1,
                 WorkItemStatus::InProgress => c.in_progress += 1,
-                WorkItemStatus::Blocked => c.blocked += 1,
+                WorkItemStatus::Blocked => {},
                 WorkItemStatus::Done => c.done += 1,
-                WorkItemStatus::Abandoned => {}
+                WorkItemStatus::Abandoned => c.abandoned += 1,
             }
         }
         counts
@@ -100,6 +100,6 @@ impl ProjectState {
 pub struct PhaseCounts {
     pub ready: usize,
     pub in_progress: usize,
-    pub blocked: usize,
     pub done: usize,
+    pub abandoned: usize,
 }

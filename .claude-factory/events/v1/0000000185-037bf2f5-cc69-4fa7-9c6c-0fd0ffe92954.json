@@ -1,0 +1,17 @@
+{
+  "id": "037bf2f5-cc69-4fa7-9c6c-0fd0ffe92954",
+  "sequence": 185,
+  "timestamp": "2026-06-13T17:54:18.062274420Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "2bf006ad-7c8d-4760-96c7-afaac69728e8",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: validate provisioning config on load",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

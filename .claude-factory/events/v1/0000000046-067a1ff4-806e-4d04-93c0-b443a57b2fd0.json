@@ -1,0 +1,17 @@
+{
+  "id": "067a1ff4-806e-4d04-93c0-b443a57b2fd0",
+  "sequence": 46,
+  "timestamp": "2026-06-13T15:47:08.241405859Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "cf506772-69a1-40be-a81b-88da6ebb13cb",
+      "phase": "development",
+      "work_type": "outer_behavioral_test_writing",
+      "status": "ready",
+      "description": "cf_abandon MCP tool: expose a public server method that marks a work item as Abandoned through the event store, so tests and the conductor can drive items into Abandoned status through the public boundary without reaching into internal plumbing (cfk_engine::events::append_event / cfk_engine::store::event_export_dir). The tool should accept a work_item_id and return a confirmation. This unblocks the cf_status abandoned-count tests (work item a561c8a4) which currently have no public API to abandon items through.",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

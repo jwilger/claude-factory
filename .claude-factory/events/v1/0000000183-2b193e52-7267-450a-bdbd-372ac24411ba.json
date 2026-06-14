@@ -1,0 +1,9 @@
+{
+  "id": "2b193e52-7267-450a-bdbd-372ac24411ba",
+  "sequence": 183,
+  "timestamp": "2026-06-13T17:54:18.062054551Z",
+  "payload": {
+    "type": "discovery_approved",
+    "work_item_id": "fc0a9110-289d-4829-8468-9c821d094d16"
+  }
+}

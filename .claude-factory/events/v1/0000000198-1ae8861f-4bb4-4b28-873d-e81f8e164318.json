@@ -1,0 +1,17 @@
+{
+  "id": "1ae8861f-4bb4-4b28-873d-e81f8e164318",
+  "sequence": 198,
+  "timestamp": "2026-06-13T17:58:54.830228021Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "87efefe3-45a4-462c-9c0a-e9a967355c93",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: operator approves a gate",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

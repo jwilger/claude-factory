@@ -1,0 +1,17 @@
+{
+  "id": "65c62dd2-1295-4d23-a74d-233c9ae401b3",
+  "sequence": 199,
+  "timestamp": "2026-06-13T17:58:54.830283131Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "92cf51b3-7b05-4521-bd24-cf6872dac503",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: operator rejects a gate",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

@@ -1,0 +1,8 @@
+[checks.tests]
+command = "cd kernel && cargo nextest run"
+
+[checks.lint]
+command = "cd kernel && cargo clippy -- -D warnings"
+
+[checks.build]
+command = "cd kernel && cargo build"

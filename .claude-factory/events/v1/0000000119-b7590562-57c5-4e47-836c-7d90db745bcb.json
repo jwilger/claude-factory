@@ -1,0 +1,12 @@
+{
+  "id": "b7590562-57c5-4e47-836c-7d90db745bcb",
+  "sequence": 119,
+  "timestamp": "2026-06-13T17:06:23.463750515Z",
+  "payload": {
+    "type": "tdd_test_submitted",
+    "work_item_id": "14ca33b4-9223-4000-9d1c-73f68a492a06",
+    "frame_depth": 0,
+    "test_content": "// See /home/jwilger/projects/claude-factory/kernel/crates/cfk-mcp/tests/adr_state_machine.rs",
+    "author_identity": "c8542632-cbe4-4940-925b-94085700cd88"
+  }
+}

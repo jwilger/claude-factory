@@ -1,0 +1,17 @@
+{
+  "id": "1466b5fd-428c-4085-80ed-dbf946939292",
+  "sequence": 201,
+  "timestamp": "2026-06-13T17:58:54.830356396Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "ba725622-f490-4488-aee4-84baec9fd274",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: kernel defers a contending interactive gate",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "5b5fd2c5-c111-4a41-b0d7-d95e389f79fc",
+  "sequence": 70,
+  "timestamp": "2026-06-13T16:06:57.096352891Z",
+  "payload": {
+    "type": "tdd_phase_advanced",
+    "work_item_id": "a561c8a4-c044-4fe1-b463-63f1c865205f",
+    "frame_depth": 0,
+    "new_phase": "check_progress"
+  }
+}

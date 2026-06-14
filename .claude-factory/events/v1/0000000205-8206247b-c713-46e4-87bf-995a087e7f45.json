@@ -1,0 +1,17 @@
+{
+  "id": "8206247b-c713-46e4-87bf-995a087e7f45",
+  "sequence": 205,
+  "timestamp": "2026-06-13T17:58:54.830533597Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "a2842eca-87ff-4aaf-939d-1dd11d6fdbcf",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: relax guardrail under multi-session",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

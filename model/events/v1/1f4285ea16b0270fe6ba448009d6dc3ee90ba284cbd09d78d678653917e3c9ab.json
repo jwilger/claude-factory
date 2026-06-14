@@ -1,0 +1,12 @@
+{
+  "command_id": "1f4285ea16b0270fe6ba448009d6dc3ee90ba284cbd09d78d678653917e3c9ab",
+  "command_ordinal": 0,
+  "event_id": "1f4285ea16b0270fe6ba448009d6dc3ee90ba284cbd09d78d678653917e3c9ab",
+  "parents": [],
+  "payload": {
+    "name": "cfk-kernel"
+  },
+  "schema_version": "emc.events.v1",
+  "stream_id": "project",
+  "type": "ProjectInitialized"
+}

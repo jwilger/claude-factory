@@ -49,7 +49,7 @@ pub fn default_routing_table() -> RoutingTable {
             },
             RoutingEntry {
                 work_type: WorkType::AdrReview,
-                executor: codex("o4-mini", CodexEffort::High),
+                executor: codex("gpt-5.5", CodexEffort::High),
                 notes: Some("Cross-family ADR review: GPT checks for conflicts from a different perspective.".into()),
             },
             RoutingEntry {

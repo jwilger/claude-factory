@@ -299,7 +299,13 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
 
         FactoryEvent::AdrDecided { work_item_id, adr_id, accepted, reason: _ } => {
             if let Some(adr_state) = state.adr_states.get_mut(work_item_id) {
-                adr_state.phase = if *accepted { AdrPhase::Accepted } else { AdrPhase::Rejected };
+                adr_state.phase = if *accepted {
+                    AdrPhase::Accepted
+                } else {
+                    // Veto: transition to PendingHumanDecision so the next cf_next_step
+                    // surfaces an ask_human action instead of marking the item terminal.
+                    AdrPhase::PendingHumanDecision
+                };
             }
             // Update status in global ADR registry.
             if let Some(rec) = state.adrs.iter_mut().find(|r| &r.id == adr_id) {

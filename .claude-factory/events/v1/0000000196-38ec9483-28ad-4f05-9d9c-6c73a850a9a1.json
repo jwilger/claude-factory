@@ -1,0 +1,9 @@
+{
+  "id": "38ec9483-28ad-4f05-9d9c-6c73a850a9a1",
+  "sequence": 196,
+  "timestamp": "2026-06-13T17:58:54.829985471Z",
+  "payload": {
+    "type": "discovery_approved",
+    "work_item_id": "1f0aaf59-6260-4d71-943f-ccd6fccba067"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "8fcccd45-f029-48a2-a68f-16e5e60fa799",
+  "sequence": 137,
+  "timestamp": "2026-06-13T17:27:54.861260672Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "mechanical_transform",
+    "outcome": "vetoed",
+    "tokens_used": null
+  }
+}

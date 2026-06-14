@@ -1,0 +1,15 @@
+{
+  "id": "f7d66d91-e268-4280-b1a6-f33a9f997833",
+  "sequence": 161,
+  "timestamp": "2026-06-13T17:42:01.386993737Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "cf506772-69a1-40be-a81b-88da6ebb13cb",
+    "gate_kind": "implementation_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Two issues: (1) No lease lifecycle check — if the work item is InProgress, cf_abandon emits WorkItemAbandoned without a LeaseReleased event, orphaning the lease in the event log. Must either emit LeaseReleased first or reject with tool_error requiring caller to release first. (2) No terminal-status guard — calling cf_abandon on an already-Abandoned or Done item emits a duplicate WorkItemAbandoned event. Add a status check matching the pattern used by cf_adr_submit."
+    },
+    "reviewer_id": "claude-factory:implementation-reviewer"
+  }
+}

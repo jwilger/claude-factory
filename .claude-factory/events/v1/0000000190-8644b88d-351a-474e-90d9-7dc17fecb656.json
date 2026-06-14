@@ -1,0 +1,17 @@
+{
+  "id": "8644b88d-351a-474e-90d9-7dc17fecb656",
+  "sequence": 190,
+  "timestamp": "2026-06-13T17:54:18.062514319Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "36e1bcaf-78f1-49cb-846d-d1fb23f6f28a",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: tear down worktree and clean secrets",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

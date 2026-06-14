@@ -1,0 +1,15 @@
+{
+  "id": "6fdc782b-282d-4475-89eb-55717a331a61",
+  "sequence": 111,
+  "timestamp": "2026-06-13T16:58:50.411421153Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "f7df6d8a-bf9c-49b6-8c7b-d9aabce8ecba",
+    "gate_kind": "implementation_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Two issues: (1) .expect() on HumanQuestion::try_new() in pure non-test core code (steps.rs:201-211) — must add a from_static() constructor that enforces non-emptiness at compile time or restructure so the infallibility is structurally guaranteed. (2) AdrPhase::Rejected is unreachable dead state — no event or handler ever transitions to it; either remove it until the 'human permanently rejects' story is implemented, or implement that path now with a test."
+    },
+    "reviewer_id": "claude-factory-reviewer"
+  }
+}

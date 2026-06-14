@@ -1,0 +1,15 @@
+{
+  "id": "2fa8b859-efcd-4e1a-88f7-875ef6f1d2c7",
+  "sequence": 90,
+  "timestamp": "2026-06-13T16:29:03.325114542Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "5b9987ff-d23f-4cdc-8c8a-2272d97c2ee2",
+    "gate_kind": "implementation_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "The lease check at cf_submit tests only that some lease exists for the work_item_id, not that the submitting session holds that lease. A different session can pass the check while any other session holds a lease on the same item. The Lease type has a session_identity field and an is_expired() method (used correctly in guardrail.rs:165) that the cf_submit check ignores entirely."
+    },
+    "reviewer_id": "claude-factory-reviewer"
+  }
+}

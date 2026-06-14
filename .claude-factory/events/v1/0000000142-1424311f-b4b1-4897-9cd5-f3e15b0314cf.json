@@ -1,0 +1,12 @@
+{
+  "id": "1424311f-b4b1-4897-9cd5-f3e15b0314cf",
+  "sequence": 142,
+  "timestamp": "2026-06-13T17:33:06.215935006Z",
+  "payload": {
+    "type": "tdd_check_result",
+    "work_item_id": "88199374-7ba8-4647-a2da-412604101eba",
+    "check_name": "tests",
+    "passed": false,
+    "first_error": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+  }
+}

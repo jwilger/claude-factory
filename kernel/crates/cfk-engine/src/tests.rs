@@ -2295,7 +2295,10 @@ mod architecture_phase {
             reason: Some("Contradicts event-sourcing constraint.".to_string()),
         }, &mut state);
 
-        assert_eq!(state.adr_states.get(&wid).map(|a| &a.phase), Some(&AdrPhase::Rejected));
+        // A veto transitions to PendingHumanDecision (not Rejected) so that
+        // cf_next_step can surface an ask_human action for the operator.
+        assert_eq!(state.adr_states.get(&wid).map(|a| &a.phase), Some(&AdrPhase::PendingHumanDecision));
+        // The global ADR registry still records the verdict as Rejected.
         assert_eq!(state.adrs[0].status, AdrStatus::Rejected);
     }
 

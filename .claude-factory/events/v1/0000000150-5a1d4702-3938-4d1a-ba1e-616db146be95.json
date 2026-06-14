@@ -1,0 +1,12 @@
+{
+  "id": "5a1d4702-3938-4d1a-ba1e-616db146be95",
+  "sequence": 150,
+  "timestamp": "2026-06-13T17:37:22.726365980Z",
+  "payload": {
+    "type": "tdd_test_submitted",
+    "work_item_id": "cf506772-69a1-40be-a81b-88da6ebb13cb",
+    "frame_depth": 0,
+    "test_content": "See kernel/crates/cfk-mcp/tests/cf_abandon.rs — behavioral test: cf_abandon marks work item Abandoned; asserts cf_status abandoned count increments to 1. Fails to compile because AbandonParams and CfkServer::cf_abandon do not yet exist.",
+    "author_identity": "c8542632-cbe4-4940-925b-94085700cd88"
+  }
+}

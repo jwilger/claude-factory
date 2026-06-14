@@ -1,0 +1,17 @@
+{
+  "id": "93a8f950-975f-4903-8892-3f644d6b1381",
+  "sequence": 175,
+  "timestamp": "2026-06-13T17:50:39.230681755Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "d7744e9a-e069-4eb7-88ca-799ad8efecc6",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: snapshot creation trigger",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

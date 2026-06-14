@@ -1,0 +1,11 @@
+{
+  "id": "a771e0c1-f892-4f1c-a722-7e485dfd50b6",
+  "sequence": 222,
+  "timestamp": "2026-06-13T18:18:10.856483171Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "event_model_authoring",
+    "outcome": "completed",
+    "tokens_used": null
+  }
+}

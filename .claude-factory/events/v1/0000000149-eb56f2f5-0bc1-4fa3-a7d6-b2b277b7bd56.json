@@ -1,0 +1,11 @@
+{
+  "id": "eb56f2f5-0bc1-4fa3-a7d6-b2b277b7bd56",
+  "sequence": 149,
+  "timestamp": "2026-06-13T17:35:13.126994818Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "mechanical_transform",
+    "outcome": "completed",
+    "tokens_used": null
+  }
+}

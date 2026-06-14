@@ -1,0 +1,5 @@
+[project]
+name = "cfk-kernel"
+version = "0.1.0"
+lean_module = "CfkKernel"
+quint_module = "CfkKernel"

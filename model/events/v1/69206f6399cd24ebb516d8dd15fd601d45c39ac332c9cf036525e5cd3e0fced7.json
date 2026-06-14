@@ -1,0 +1,20 @@
+{
+  "command_id": "69206f6399cd24ebb516d8dd15fd601d45c39ac332c9cf036525e5cd3e0fced7",
+  "command_ordinal": 0,
+  "event_id": "69206f6399cd24ebb516d8dd15fd601d45c39ac332c9cf036525e5cd3e0fced7",
+  "parents": [
+    "18e6cedc5570bf66f8cb002a66d579d29ab0ff90a79eddb00be8451506963017",
+    "1f4285ea16b0270fe6ba448009d6dc3ee90ba284cbd09d78d678653917e3c9ab",
+    "f9064f446a206c9147c57d0d0cdafc9e9ddce2f3993cdb31b15bebfc1dc47736"
+  ],
+  "payload": {
+    "description": "Given replay has completed and metrics are recorded, When the operator calls cf_status, Then the response includes last_replay_ms and last_replay_event_count fields reflecting the most recent startup replay.",
+    "kind": "state_view",
+    "name": "Expose Replay Metrics in cf_status",
+    "slug": "expose-replay-metrics",
+    "workflow": "replay-cost-instrumentation"
+  },
+  "schema_version": "emc.events.v1",
+  "stream_id": "slice::expose-replay-metrics",
+  "type": "SliceAdded"
+}

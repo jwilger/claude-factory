@@ -1,0 +1,15 @@
+{
+  "id": "ae1370dd-dd1d-44da-8304-efa73fcbacb8",
+  "sequence": 271,
+  "timestamp": "2026-06-14T02:53:36.827452610Z",
+  "payload": {
+    "type": "lease_granted",
+    "lease": {
+      "id": "a73fb53c-053f-40a3-9528-ec681aa1f955",
+      "work_item_id": "a2842eca-87ff-4aaf-939d-1dd11d6fdbcf",
+      "session_identity": "c8542632-cbe4-4940-925b-94085700cd88",
+      "granted_at": "2026-06-14T02:53:36.827431395Z",
+      "expires_at": null
+    }
+  }
+}

@@ -48,6 +48,16 @@ When spawning an agent, the routing spec from `cf_next_step` specifies:
 
 Always pass the kernel's prompt verbatim — do not embellish or compress it.
 
+## Autonomous operation
+
+Run without stopping to ask questions. Make tactical decisions:
+
+- **Missing executor script** (`scripts/codex-runner.sh` absent): fall back to the equivalent Claude agent for that gate kind and continue.
+- **Dependency gap**: if a test requires a public API that does not yet exist, add the missing work item to the backlog and veto the test with a clear reason, then continue the loop.
+- **TDD discipline**: write ONE failing test per `spawn_agent` step (Kent Beck: simplest test that pins the core contract).
+
+Only stop when the kernel returns `idle`, when the kernel issues an `ask_human` action, or when there is a genuine blocker with no path forward (missing credentials, irreversible destructive action). Do **not** use `AskUserQuestion` for tactical decisions.
+
 ## Error handling
 
 If any submission tool returns a validation failure, display the reason to the user and stop — do not retry automatically. The kernel's rejection is authoritative.

@@ -10,6 +10,7 @@ use cfk_core::{
         design::AtomicKind,
         gate::{GateKind, GateVerdict, VetoReason},
         ids::{AdrId, ComponentId, WorkItemId},
+        lease::SessionIdentity,
         metrics::StepOutcome,
         phase::PhaseKind,
         routing::WorkType,
@@ -79,6 +80,12 @@ pub struct ClaimParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WorkItemIdParams {
     /// The `work_item_id` of the target work item.
+    pub work_item_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AbandonParams {
+    /// The `work_item_id` of the work item to abandon.
     pub work_item_id: String,
 }
 
@@ -218,11 +225,11 @@ pub struct RecordOutcomeParams {
 
 #[derive(Debug, Serialize)]
 struct PhaseStatusEntry {
-    phase: String,
+    phase: PhaseKind,
     ready: usize,
     in_progress: usize,
-    blocked: usize,
     done: usize,
+    abandoned: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -322,7 +329,7 @@ impl CfkServer {
     ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
-    fn load_with_forge_and_session(
+    pub fn load_with_forge_and_session(
         project_root: PathBuf,
         forge: Arc<dyn ForgeAdapter>,
         session_identity: Option<String>,
@@ -452,7 +459,7 @@ any other `cf_*` tool. Returns the new project ID.")]
             std::fs::read_to_string(&settings_path)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::json!({}))
+                .unwrap_or_else(|| serde_json::json!({}))
         } else {
             serde_json::json!({})
         };
@@ -477,7 +484,7 @@ any other `cf_*` tool. Returns the new project ID.")]
 
     #[tool(description = "\
 Return a compact dashboard of work-item counts per phase. \
-Shows ready / in_progress / blocked / done for each phase.")]
+Shows ready / in_progress / done / abandoned for each phase.")]
     pub async fn cf_status(
         &self,
         Parameters(_params): Parameters<PhaseFilterParams>,
@@ -493,14 +500,14 @@ Shows ready / in_progress / blocked / done for each phase.")]
             .map(|phase| {
                 let c = counts.get(phase).copied().unwrap_or_default();
                 PhaseStatusEntry {
-                    phase: format!("{phase:?}").to_lowercase(),
+                    phase: *phase,
                     ready: c.ready,
                     in_progress: c.in_progress,
-                    blocked: c.blocked,
                     done: c.done,
+                    abandoned: c.abandoned,
                 }
             })
-            .filter(|p| p.ready > 0 || p.in_progress > 0 || p.blocked > 0 || p.done > 0)
+            .filter(|p| p.ready > 0 || p.in_progress > 0 || p.done > 0 || p.abandoned > 0)
             .collect();
 
         content_json(&StatusResponse {
@@ -675,6 +682,25 @@ For other phases: any JSON value is accepted as evidence.")]
 
             if !proj.work_items.iter().any(|i| i.id == work_item_id) {
                 return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            }
+
+            let effective_session: Option<SessionIdentity> = self
+                .session_identity
+                .as_deref()
+                .and_then(|s| SessionIdentity::try_new(s).ok());
+            let now = chrono::Utc::now();
+            let lease_valid = proj.leases.iter().any(|l| {
+                l.work_item_id == work_item_id
+                    && effective_session
+                        .as_ref()
+                        .is_none_or(|s| &l.session_identity == s)
+                    && !l.is_expired(now)
+            });
+            if !lease_valid {
+                return Ok(tool_error(format!(
+                    "no active lease for work item {} — claim the item before submitting",
+                    params.work_item_id
+                )));
             }
 
             let current_tdd_phase = proj.dev_states.get(&work_item_id)
@@ -866,9 +892,14 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
                 reason,
             }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-            guard.emit(FactoryEvent::WorkItemCompleted {
-                work_item_id: work_item_id.clone(),
-            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            // Only complete the work item when the ADR is accepted. On veto the item
+            // transitions to PendingHumanDecision — cf_next_step will surface an
+            // ask_human action so a human can decide to requeue, escalate, or abandon.
+            if accepted {
+                guard.emit(FactoryEvent::WorkItemCompleted {
+                    work_item_id: work_item_id.clone(),
+                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
 
             // Project ARCHITECTURE.md when an ADR is accepted.
             if accepted && let Some(ref proj) = guard.project {
@@ -1416,8 +1447,14 @@ Returns the assigned ADR ID. After submission the ADR enters review gate.")]
             let guard = self.state.read().await;
             let proj = guard.project.as_ref()
                 .ok_or_else(|| McpError::invalid_params("Project not initialized.", None))?;
-            if !proj.work_items.iter().any(|i| i.id == work_item_id) {
+            let Some(item) = proj.work_items.iter().find(|i| i.id == work_item_id) else {
                 return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            };
+            if item.status == WorkItemStatus::Done {
+                return Ok(tool_error(format!(
+                    "work item {} is already Done; cf_adr_submit is not allowed on completed work items",
+                    params.work_item_id
+                )));
             }
         }
 
@@ -1555,6 +1592,50 @@ Returns the IDs of any new work items created.")]
             "new_work_item_ids": new_item_ids,
             "gap_count": new_item_ids.len(),
         }))
+    }
+
+    #[tool(description = "\
+Mark a work item as Abandoned. The item must exist in the project. \
+Once abandoned it no longer appears in the ready/in-progress counts and \
+increments the abandoned counter visible through `cf_status`.")]
+    pub async fn cf_abandon(
+        &self,
+        Parameters(params): Parameters<AbandonParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        {
+            let guard = self.state.read().await;
+            let Some(ref proj) = guard.project else {
+                return Ok(tool_error("Project not initialized."));
+            };
+            let Some(item) = proj.work_items.iter().find(|i| i.id == work_item_id) else {
+                return Ok(tool_error(format!(
+                    "work item {} not found",
+                    params.work_item_id
+                )));
+            };
+            if item.status == WorkItemStatus::Abandoned || item.status == WorkItemStatus::Done {
+                return Ok(tool_error(format!(
+                    "work item {} is already {}; cannot abandon a terminal work item",
+                    params.work_item_id,
+                    format!("{:?}", item.status).to_lowercase(),
+                )));
+            }
+            if item.status == WorkItemStatus::InProgress {
+                return Ok(tool_error(format!(
+                    "work item {} is in-progress; call cf_release before abandoning",
+                    params.work_item_id
+                )));
+            }
+        }
+
+        let mut guard = self.state.write().await;
+        guard
+            .emit(FactoryEvent::WorkItemAbandoned { work_item_id })
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        content_json(&serde_json::json!({ "abandoned": params.work_item_id }))
     }
 
     #[tool(description = "\

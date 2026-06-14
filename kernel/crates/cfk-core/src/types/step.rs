@@ -69,6 +69,26 @@ pub struct CheckName(String);
 )]
 pub struct HumanQuestion(String);
 
+impl HumanQuestion {
+    /// Construct a `HumanQuestion` from a `&'static str` literal.
+    ///
+    /// Callers must only pass non-empty string literals.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `s` is empty or whitespace-only. Because the input must be a
+    /// `&'static str` literal this is a compile-time authoring error, not a
+    /// runtime condition.
+    #[must_use]
+    pub fn from_static(s: &'static str) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "called only with non-empty &'static str literals; emptiness is a compile-time authoring error, not a runtime condition"
+        )]
+        Self::try_new(s.to_string()).expect("static HumanQuestion literal must be non-empty")
+    }
+}
+
 /// The reason the factory is idle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

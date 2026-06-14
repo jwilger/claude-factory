@@ -1,0 +1,17 @@
+{
+  "id": "423a32bf-cfbb-411b-84a9-64c50d6898b8",
+  "sequence": 188,
+  "timestamp": "2026-06-13T17:54:18.062424301Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "e41dd728-914f-4a1a-ba32-ce4d5d746729",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: record what was provisioned",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

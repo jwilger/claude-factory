@@ -1,0 +1,17 @@
+{
+  "id": "46ad320f-9941-4164-91ae-712e214afe24",
+  "sequence": 174,
+  "timestamp": "2026-06-13T17:50:39.230627624Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "37c4b6da-dcd0-4d18-aa2a-7752298074bb",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: replay-cost instrumentation and threshold watch",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

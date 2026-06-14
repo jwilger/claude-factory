@@ -1,0 +1,15 @@
+{
+  "id": "ab033ce6-0b43-4c3c-83b3-1d0c156862f9",
+  "sequence": 120,
+  "timestamp": "2026-06-13T17:08:10.372681469Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "14ca33b4-9223-4000-9d1c-73f68a492a06",
+    "gate_kind": "test_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Semantic types not used consistently: session_identity passed as raw \"session-alpha\" string without going through SessionIdentity::try_new (as ReviewerId is handled); verdict passed as raw \"approved\" string without going through GateVerdict::Approved serialization. Both must use the domain type construct-then-convert pattern already established in the test for ReviewerId."
+    },
+    "reviewer_id": "claude-factory-reviewer"
+  }
+}

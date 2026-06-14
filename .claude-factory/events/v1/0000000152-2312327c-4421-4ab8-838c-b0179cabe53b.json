@@ -1,0 +1,14 @@
+{
+  "id": "2312327c-4421-4ab8-838c-b0179cabe53b",
+  "sequence": 152,
+  "timestamp": "2026-06-13T17:38:11.334805873Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "cf506772-69a1-40be-a81b-88da6ebb13cb",
+    "gate_kind": "test_review",
+    "verdict": {
+      "verdict": "approved"
+    },
+    "reviewer_id": "claude-factory:test-reviewer"
+  }
+}

@@ -197,7 +197,15 @@ pub fn architecture_step_action(
                 prompt,
             }
         }
-        Some(AdrPhase::Accepted | AdrPhase::Rejected) => return Ok(None),
+        Some(AdrPhase::PendingHumanDecision) => {
+            let question = crate::types::step::HumanQuestion::from_static(
+                "The ADR reviewer vetoed this draft. Do you want to: (1) requeue the architect \
+                 to revise the ADR, (2) escalate the rejection for further review, or (3) abandon \
+                 this ADR entirely?",
+            );
+            StepAction::AskHuman { question }
+        }
+        Some(AdrPhase::Accepted) => return Ok(None),
     };
     Ok(Some(action))
 }

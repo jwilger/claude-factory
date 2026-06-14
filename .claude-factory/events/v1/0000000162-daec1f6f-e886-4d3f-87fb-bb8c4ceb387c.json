@@ -1,0 +1,11 @@
+{
+  "id": "daec1f6f-e886-4d3f-87fb-bb8c4ceb387c",
+  "sequence": 162,
+  "timestamp": "2026-06-13T17:42:07.426701918Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "outer_behavioral_test_writing",
+    "outcome": "vetoed",
+    "tokens_used": null
+  }
+}

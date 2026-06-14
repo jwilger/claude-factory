@@ -1,0 +1,17 @@
+{
+  "id": "3025d62a-c0a4-4d80-8c64-2f1ec479874a",
+  "sequence": 202,
+  "timestamp": "2026-06-13T17:58:54.830395366Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "abf79130-711c-4ad1-a96c-2eccb2c195ac",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: kernel resolves and releases the lock",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

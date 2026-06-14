@@ -1,0 +1,10 @@
+{
+  "id": "d67b74f1-e356-4dae-9a53-e74002106fe7",
+  "sequence": 31,
+  "timestamp": "2026-06-13T15:28:48.930072894Z",
+  "payload": {
+    "type": "tdd_slice_started",
+    "work_item_id": "f7df6d8a-bf9c-49b6-8c7b-d9aabce8ecba",
+    "author_identity": "c8542632-cbe4-4940-925b-94085700cd88"
+  }
+}

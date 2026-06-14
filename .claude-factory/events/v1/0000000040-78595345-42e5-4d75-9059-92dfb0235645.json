@@ -1,0 +1,15 @@
+{
+  "id": "78595345-42e5-4d75-9059-92dfb0235645",
+  "sequence": 40,
+  "timestamp": "2026-06-13T15:40:15.644871064Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "a561c8a4-c044-4fe1-b463-63f1c865205f",
+    "gate_kind": "test_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Three issues: (1) PhaseStatusCounts and StatusSummary lack #[serde(deny_unknown_fields)]; serde silently ignores unknown fields by default, so the 'deny_unknown_fields' claim in scenario 1's comment is wrong. The actual failure mechanism is the explicit obj.contains_key assertions, not serde. Add the attribute to both structs to make the contract airtight and comments accurate. (2) Scenario 1 still bundles multiple behavioral assertions: raw non-empty, phases non-empty, per-entry key presence, and round-trip deserialization. Split into focused single-assertion tests. (3) Scenario 3 contains two distinct behavioral assertions: abandoned=1 AND done=0. Split into two tests. Expected failure reasons must accurately describe what actually fails (deserialization at call_cf_status, not the count assertion) in scenarios 2 and 3."
+    },
+    "reviewer_id": "test-reviewer-claude-sonnet-r2"
+  }
+}

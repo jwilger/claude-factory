@@ -1,0 +1,12 @@
+{
+  "id": "053010ba-f061-4661-bf68-da3601827fad",
+  "sequence": 165,
+  "timestamp": "2026-06-13T17:43:36.874834153Z",
+  "payload": {
+    "type": "tdd_check_result",
+    "work_item_id": "cf506772-69a1-40be-a81b-88da6ebb13cb",
+    "check_name": "tests",
+    "passed": true,
+    "first_error": null
+  }
+}

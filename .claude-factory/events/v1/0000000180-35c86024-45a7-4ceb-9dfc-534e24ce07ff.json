@@ -1,0 +1,11 @@
+{
+  "id": "35c86024-45a7-4ceb-9dfc-534e24ce07ff",
+  "sequence": 180,
+  "timestamp": "2026-06-13T17:50:44.401502736Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "socratic_discovery",
+    "outcome": "approved",
+    "tokens_used": null
+  }
+}

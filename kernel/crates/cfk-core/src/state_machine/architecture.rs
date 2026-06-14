@@ -16,8 +16,8 @@ pub enum AdrPhase {
     PendingReview,
     /// Reviewer approved; ADR is accepted into the registry.
     Accepted,
-    /// Reviewer vetoed the ADR.
-    Rejected,
+    /// Reviewer vetoed the ADR; a human must decide next steps.
+    PendingHumanDecision,
 }
 
 /// Runtime state for an in-progress architecture (ADR) work item.

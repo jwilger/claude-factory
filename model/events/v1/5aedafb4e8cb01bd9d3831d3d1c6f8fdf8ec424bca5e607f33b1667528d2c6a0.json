@@ -1,0 +1,28 @@
+{
+  "command_id": "5aedafb4e8cb01bd9d3831d3d1c6f8fdf8ec424bca5e607f33b1667528d2c6a0",
+  "command_ordinal": 0,
+  "event_id": "5aedafb4e8cb01bd9d3831d3d1c6f8fdf8ec424bca5e607f33b1667528d2c6a0",
+  "parents": [
+    "18e6cedc5570bf66f8cb002a66d579d29ab0ff90a79eddb00be8451506963017",
+    "1f4285ea16b0270fe6ba448009d6dc3ee90ba284cbd09d78d678653917e3c9ab",
+    "34c75898ac3013292c93a929f3c633745daf1a07322364fa38c57fff79724f40",
+    "3ae2a7f6b401e9428e9206176b04cce14085dc72cb35aa707065598829bd066a",
+    "3ea88008639d1778e5dd612e3dcad241dceaea0ccb3d7ff088b5642977fcdf95",
+    "461d03b1b99bfe0424db5f34709aabaf45583e77a6200fdcf1685912ded95f4b",
+    "4c090fab91a2e566e5c85d8916ec712dee17c282070a87443944daf8ede469cc",
+    "58c8e8b36a8a9aad3ddebe52f511e93b9704f1930f946016593a400864e8b480",
+    "69206f6399cd24ebb516d8dd15fd601d45c39ac332c9cf036525e5cd3e0fced7",
+    "6afd67771eb997b7673fa754175b837e47b632ed282a46c9dcd9f83ac0d6a8db",
+    "6be89ea6c93342a96e08f954306b9b8163732ca0a7067f1bc629b278537a44ef",
+    "8dbfa1fa5db397b0311b272fe68bfd8e615f21fcbf375ee19e35d6e57147695f",
+    "f9064f446a206c9147c57d0d0cdafc9e9ddce2f3993cdb31b15bebfc1dc47736"
+  ],
+  "payload": {
+    "description": "Workflow covering how the event store loader uses an existing snapshot to skip full-history replay on cold start, loading state from snapshot then replaying only delta events since the snapshot was taken.",
+    "name": "Snapshot-Accelerated Loader",
+    "slug": "snapshot-accelerated-loader"
+  },
+  "schema_version": "emc.events.v1",
+  "stream_id": "workflow::snapshot-accelerated-loader",
+  "type": "WorkflowAdded"
+}

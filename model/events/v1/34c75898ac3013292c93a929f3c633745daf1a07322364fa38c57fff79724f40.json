@@ -1,0 +1,22 @@
+{
+  "command_id": "34c75898ac3013292c93a929f3c633745daf1a07322364fa38c57fff79724f40",
+  "command_ordinal": 0,
+  "event_id": "34c75898ac3013292c93a929f3c633745daf1a07322364fa38c57fff79724f40",
+  "parents": [
+    "18e6cedc5570bf66f8cb002a66d579d29ab0ff90a79eddb00be8451506963017",
+    "1f4285ea16b0270fe6ba448009d6dc3ee90ba284cbd09d78d678653917e3c9ab",
+    "3ae2a7f6b401e9428e9206176b04cce14085dc72cb35aa707065598829bd066a",
+    "69206f6399cd24ebb516d8dd15fd601d45c39ac332c9cf036525e5cd3e0fced7",
+    "6afd67771eb997b7673fa754175b837e47b632ed282a46c9dcd9f83ac0d6a8db",
+    "8dbfa1fa5db397b0311b272fe68bfd8e615f21fcbf375ee19e35d6e57147695f",
+    "f9064f446a206c9147c57d0d0cdafc9e9ddce2f3993cdb31b15bebfc1dc47736"
+  ],
+  "payload": {
+    "description": "Workflow covering how a replay-cost threshold breach triggers an automatic snapshot of the event store to cap future cold-start replay time.",
+    "name": "Snapshot Creation Trigger",
+    "slug": "snapshot-creation-trigger"
+  },
+  "schema_version": "emc.events.v1",
+  "stream_id": "workflow::snapshot-creation-trigger",
+  "type": "WorkflowAdded"
+}

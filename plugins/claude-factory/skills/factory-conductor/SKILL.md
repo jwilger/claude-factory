@@ -27,6 +27,16 @@ Never embellish the kernel's prompt. Never reroute to a different agent. Never s
 
 **provider: codex** → Run `scripts/codex-runner.sh <model> <effort> <schema-file> <prompt-file> <output-file>` via Bash. Write the prompt to a temp file first. Read the output file after the script exits. Pass the parsed JSON to cf_submit.
 
+## Autonomous operation
+
+The conductor runs without stopping to ask questions. Make tactical decisions yourself:
+
+- **Missing executor script**: If `scripts/codex-runner.sh` does not exist, fall back to the equivalent Claude agent for that gate kind and continue.
+- **Dependency gap**: If a test requires a public API that does not exist yet, add the missing work item to the backlog and veto the test with a clear reason, then continue the loop.
+- **TDD discipline**: Write ONE failing test per `spawn_agent` step. Kent Beck TDD — simplest test that pins the core contract, then make it pass, then the next test.
+
+Only stop when the kernel returns `idle`, when the kernel issues an `ask_human` action, or when there is a genuine blocker with no path forward (missing credentials, irreversible destructive action). Do NOT use `AskUserQuestion` for tactical decisions.
+
 ## Handling cf_submit failures
 
 If cf_submit returns a validation rejection, display the kernel's error message and stop. Do not retry automatically. The kernel's validation is authoritative — a rejection means the artifact did not meet the gate's requirements. The human must review and decide how to proceed (usually: restart the step that produced the rejected artifact).

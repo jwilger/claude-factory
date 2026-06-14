@@ -1,0 +1,15 @@
+{
+  "id": "b7d41378-faf5-4d75-b6e3-a937c98dd739",
+  "sequence": 133,
+  "timestamp": "2026-06-13T17:19:29.507405361Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "88199374-7ba8-4647-a2da-412604101eba",
+    "gate_kind": "test_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Two issues: (1) WorkItemId and SessionIdentity are constructed then immediately discarded via .to_string() — the MCP boundary String fields make this unavoidable; use raw strings with explicit comment explaining the boundary constraint, rather than construct-then-discard theatre. (2) assert_eq!(action_type, \"gate_review\") in the test body is a second behavioral assertion; move it into the helper as a panic guard with a clear message, leaving only the model assertion in the test body."
+    },
+    "reviewer_id": "claude-factory-reviewer"
+  }
+}

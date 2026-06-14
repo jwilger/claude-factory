@@ -1,0 +1,15 @@
+{
+  "id": "39261cb2-be4b-4fe7-b027-7a026ccb839a",
+  "sequence": 32,
+  "timestamp": "2026-06-13T15:33:30.951854458Z",
+  "payload": {
+    "type": "tdd_gate_verdict",
+    "work_item_id": "a561c8a4-c044-4fe1-b463-63f1c865205f",
+    "gate_kind": "test_review",
+    "verdict": {
+      "verdict": "vetoed",
+      "reason": "Two issues: (1) Single test bundles multiple independent behavioral assertions (project_id non-empty, dev-phase counts, review-phase counts) — a failure in one hides the others; (2) The slice's defining behavior — that abandoned items are surfaced as a distinct count rather than dropped or folded into done — is never exercised. No work item is driven into Abandoned status, so the test would pass even if the implementation hardcoded abandoned=0. Fix: split into focused tests and add a scenario that creates an abandoned item and asserts abandoned>0."
+    },
+    "reviewer_id": "test-reviewer-claude-sonnet"
+  }
+}

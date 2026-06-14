@@ -1,0 +1,17 @@
+{
+  "id": "061c010a-2e28-45bc-97be-b9a0c81ab9c7",
+  "sequence": 186,
+  "timestamp": "2026-06-13T17:54:18.062310537Z",
+  "payload": {
+    "type": "work_item_added",
+    "work_item": {
+      "id": "6540388e-a211-47c2-95f8-f056758303fb",
+      "phase": "event_modeling",
+      "work_type": "event_model_authoring",
+      "status": "ready",
+      "description": "Model workflow: provision worktree on creation",
+      "active_lease": null,
+      "active_step": null
+    }
+  }
+}

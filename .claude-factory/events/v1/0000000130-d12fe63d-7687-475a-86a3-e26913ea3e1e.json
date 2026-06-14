@@ -1,0 +1,12 @@
+{
+  "id": "d12fe63d-7687-475a-86a3-e26913ea3e1e",
+  "sequence": 130,
+  "timestamp": "2026-06-13T17:14:41.776239824Z",
+  "payload": {
+    "type": "tdd_check_result",
+    "work_item_id": "14ca33b4-9223-4000-9d1c-73f68a492a06",
+    "check_name": "lint",
+    "passed": true,
+    "first_error": null
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "dfbd7224-e92e-4629-a09b-75bc29fde906",
+  "sequence": 29,
+  "timestamp": "2026-06-13T15:28:45.508003634Z",
+  "payload": {
+    "type": "step_outcome_recorded",
+    "work_type": "outer_behavioral_test_writing",
+    "outcome": "completed",
+    "tokens_used": 48820
+  }
+}
