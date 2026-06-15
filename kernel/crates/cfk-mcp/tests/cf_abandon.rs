@@ -36,8 +36,9 @@ use uuid::Uuid;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -72,7 +73,7 @@ fn result_text(result: &CallToolResult) -> String {
 #[tokio::test]
 async fn abandoned_work_item_increments_abandoned_count_in_cf_status() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     // ── Given: initialise the project ────────────────────────────────────────
 

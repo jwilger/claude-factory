@@ -43,8 +43,9 @@ use uuid::Uuid;
 
 // ── Test helpers ───────────────────────────────────────────────────────────────
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -237,7 +238,7 @@ async fn advance_adr_to_accepted(server: &CfkServer) -> String {
 #[tokio::test]
 async fn cf_adr_submit_on_completed_work_item_is_rejected() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     // Advance to Done state using the setup helper.
     let work_item_id_str = advance_adr_to_accepted(&server).await;

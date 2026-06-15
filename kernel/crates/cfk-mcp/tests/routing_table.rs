@@ -44,8 +44,9 @@ use tempfile::TempDir;
 
 // ── Test helpers ───────────────────────────────────────────────────────────────
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -210,7 +211,7 @@ async fn advance_to_adr_review_state(server: &CfkServer) -> ReadyStep {
 #[tokio::test]
 async fn adr_review_gate_does_not_route_to_o4_mini() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     let step = advance_to_adr_review_state(&server).await;
 

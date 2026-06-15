@@ -61,17 +61,19 @@ fn result_json(result: &CallToolResult) -> serde_json::Value {
     serde_json::from_str(&text).expect("result content should be valid JSON")
 }
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
-fn make_server_with_session(dir: &TempDir, forge: Arc<MemoryForge>, session: &str) -> CfkServer {
+async fn make_server_with_session(dir: &TempDir, forge: Arc<MemoryForge>, session: &str) -> CfkServer {
     CfkServer::load_with_forge_and_session(
         dir.path().to_path_buf(),
         forge,
         Some(session.to_string()),
     )
+    .await
     .expect("server load should succeed on empty directory")
 }
 
@@ -87,7 +89,7 @@ fn make_server_with_session(dir: &TempDir, forge: Arc<MemoryForge>, session: &st
 #[tokio::test]
 async fn cf_submit_without_active_lease_is_rejected() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     // Given: an initialised project
     let init_result = server
@@ -182,7 +184,7 @@ async fn cf_submit_from_wrong_session_is_rejected() {
 
     // Server A: alice's session
     let server_alice =
-        make_server_with_session(&dir, Arc::clone(&forge), "alice");
+        make_server_with_session(&dir, Arc::clone(&forge), "alice").await;
 
     // Initialise project via alice's server.
     let init_result = server_alice
@@ -231,10 +233,15 @@ async fn cf_submit_from_wrong_session_is_rejected() {
         .expect("cf_next_step response should include work_item_id")
         .to_string();
 
-    // Server B: bob's session — shares the same forge (and thus same event log
-    // written to the same TempDir), but has a different session identity.
+    // Release alice's server so the eventcore-fs store lock is freed before bob
+    // opens his own server on the same directory.  Alice's events are persisted
+    // to disk and bob will replay them on load.
+    drop(server_alice);
+
+    // Server B: bob's session — same TempDir (shares alice's persisted event
+    // log), but a different session identity.
     let server_bob =
-        make_server_with_session(&dir, Arc::clone(&forge), "bob");
+        make_server_with_session(&dir, Arc::clone(&forge), "bob").await;
 
     // When: bob submits for alice's work item.
     let submit_result = server_bob

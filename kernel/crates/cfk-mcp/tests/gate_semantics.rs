@@ -39,8 +39,9 @@ use uuid::Uuid;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -231,7 +232,7 @@ async fn setup_adr_vetoed_state(server: &CfkServer) -> String {
 #[tokio::test]
 async fn adr_reviewer_veto_surfaces_as_ask_human() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     // Advance to the post-veto state using the setup helper.
     setup_adr_vetoed_state(&server).await;

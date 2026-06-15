@@ -71,8 +71,9 @@ pub struct StatusSummary {
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -110,7 +111,7 @@ fn result_text(result: &CallToolResult) -> String {
 #[tokio::test]
 async fn cf_status_response_round_trips_into_status_summary() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     // Given: an initialised project
     let init_result = server
