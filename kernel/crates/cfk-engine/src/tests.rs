@@ -3327,12 +3327,13 @@ mod submission_result_normalization {
 mod guardrail_check {
     //! Integration tests for `check_guardrail` over real temp project dirs.
     //!
-    //! No mocks: each test seeds an on-disk event store and (where relevant) a
-    //! lease, then asserts the verdict for a candidate edit.
+    //! No mocks: each test seeds an on-disk eventcore-fs store and (where
+    //! relevant) a lease, then asserts the verdict for a candidate edit.
 
     use crate::{
-        events::{FactoryEvent, append_event},
+        events::{FactoryEvent, append_event_v2},
         guardrail::check_guardrail,
+        store::eventcore_store_dir,
     };
     use cfk_core::{
         guardrail::{AllowReason, BlockReason, GuardrailDecision},
@@ -3342,18 +3343,33 @@ mod guardrail_check {
         },
     };
     use chrono::{Duration, Utc};
+    use eventcore_fs::FileEventStore;
 
     fn session(name: &str) -> SessionIdentity {
         SessionIdentity::try_new(name.to_string()).expect("valid session identity")
     }
 
-    /// Seed a `ProjectInitialized` event, which also creates `.claude-factory/`.
-    fn init_factory_project(root: &std::path::Path) {
-        append_event(root, 1, FactoryEvent::ProjectInitialized { id: ProjectId::new() })
-            .expect("append ProjectInitialized");
+    fn open_store(root: &std::path::Path) -> FileEventStore {
+        let store_dir = eventcore_store_dir(root);
+        std::fs::create_dir_all(&store_dir).expect("create eventstore dir");
+        FileEventStore::open(&store_dir).expect("open store")
     }
 
-    fn grant_lease(root: &std::path::Path, seq: u64, holder: &SessionIdentity, expires_in_secs: Option<i64>) {
+    /// Seed a `ProjectInitialized` event, which also creates `.claude-factory/`.
+    async fn init_factory_project(root: &std::path::Path) -> FileEventStore {
+        let store = open_store(root);
+        append_event_v2(&store, FactoryEvent::ProjectInitialized { id: ProjectId::new() }, 0)
+            .await
+            .expect("append ProjectInitialized");
+        store
+    }
+
+    async fn grant_lease(
+        store: &FileEventStore,
+        seq: usize,
+        holder: &SessionIdentity,
+        expires_in_secs: Option<i64>,
+    ) {
         let now = Utc::now();
         let lease = Lease {
             id: LeaseId::new(),
@@ -3362,11 +3378,13 @@ mod guardrail_check {
             granted_at: now,
             expires_at: expires_in_secs.map(|s| now + Duration::seconds(s)),
         };
-        append_event(root, seq, FactoryEvent::LeaseGranted { lease }).expect("append LeaseGranted");
+        append_event_v2(store, FactoryEvent::LeaseGranted { lease }, seq)
+            .await
+            .expect("append LeaseGranted");
     }
 
-    #[test]
-    fn allows_when_not_a_factory_project() {
+    #[tokio::test]
+    async fn allows_when_not_a_factory_project() {
         let dir = tempfile::tempdir().expect("tempdir");
         let decision = check_guardrail(
             dir.path(),
@@ -3374,14 +3392,15 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(decision, GuardrailDecision::Allow(AllowReason::NotFactoryProject));
     }
 
-    #[test]
-    fn blocks_protected_source_without_lease() {
+    #[tokio::test]
+    async fn blocks_protected_source_without_lease() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        init_factory_project(dir.path()).await;
 
         let decision = check_guardrail(
             dir.path(),
@@ -3389,6 +3408,7 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(
             decision,
@@ -3396,12 +3416,13 @@ mod guardrail_check {
         );
     }
 
-    #[test]
-    fn allows_protected_source_when_session_holds_lease() {
+    #[tokio::test]
+    async fn allows_protected_source_when_session_holds_lease() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        let store = init_factory_project(dir.path()).await;
         let holder = session("s1");
-        grant_lease(dir.path(), 2, &holder, None);
+        grant_lease(&store, 1, &holder, None).await;
+        drop(store); // release the lock before check_guardrail opens the same store
 
         let decision = check_guardrail(
             dir.path(),
@@ -3409,15 +3430,17 @@ mod guardrail_check {
             &holder,
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(decision, GuardrailDecision::Allow(AllowReason::LeaseHeld));
     }
 
-    #[test]
-    fn lease_held_by_another_session_does_not_authorize() {
+    #[tokio::test]
+    async fn lease_held_by_another_session_does_not_authorize() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
-        grant_lease(dir.path(), 2, &session("other"), None);
+        let store = init_factory_project(dir.path()).await;
+        grant_lease(&store, 1, &session("other"), None).await;
+        drop(store); // release the lock before check_guardrail opens the same store
 
         let decision = check_guardrail(
             dir.path(),
@@ -3425,6 +3448,7 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(
             decision,
@@ -3432,12 +3456,13 @@ mod guardrail_check {
         );
     }
 
-    #[test]
-    fn expired_lease_does_not_authorize() {
+    #[tokio::test]
+    async fn expired_lease_does_not_authorize() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        let store = init_factory_project(dir.path()).await;
         let holder = session("s1");
-        grant_lease(dir.path(), 2, &holder, Some(-60)); // expired a minute ago
+        grant_lease(&store, 1, &holder, Some(-60)).await; // expired a minute ago
+        drop(store); // release the lock before check_guardrail opens the same store
 
         let decision = check_guardrail(
             dir.path(),
@@ -3445,6 +3470,7 @@ mod guardrail_check {
             &holder,
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(
             decision,
@@ -3452,10 +3478,10 @@ mod guardrail_check {
         );
     }
 
-    #[test]
-    fn allows_unprotected_path() {
+    #[tokio::test]
+    async fn allows_unprotected_path() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        init_factory_project(dir.path()).await;
 
         let decision = check_guardrail(
             dir.path(),
@@ -3463,14 +3489,15 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(decision, GuardrailDecision::Allow(AllowReason::PathNotProtected));
     }
 
-    #[test]
-    fn bypass_sentinel_allows_unleased_protected_edit() {
+    #[tokio::test]
+    async fn bypass_sentinel_allows_unleased_protected_edit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        init_factory_project(dir.path()).await;
         std::fs::write(dir.path().join(".claude-factory/LEASE_BYPASS"), "on")
             .expect("write bypass sentinel");
 
@@ -3480,14 +3507,15 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(decision, GuardrailDecision::Allow(AllowReason::BypassActive));
     }
 
-    #[test]
-    fn honors_custom_protected_globs_from_config() {
+    #[tokio::test]
+    async fn honors_custom_protected_globs_from_config() {
         let dir = tempfile::tempdir().expect("tempdir");
-        init_factory_project(dir.path());
+        init_factory_project(dir.path()).await;
         // A Python-style project: gate the package dir, not src/.
         std::fs::write(
             dir.path().join(".claude-factory/guardrail.json"),
@@ -3502,6 +3530,7 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(
             src_decision,
@@ -3515,6 +3544,7 @@ mod guardrail_check {
             &session("s1"),
             Utc::now(),
         )
+        .await
         .expect("check");
         assert_eq!(
             pkg_decision,

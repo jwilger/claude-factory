@@ -1,15 +1,16 @@
 //! Project state replay from the event log.
 //!
-//! `load_project_state` reads all event files from `.claude-factory/events/v1/`,
+//! `load_project_state_v2` reads all events from the `eventcore-fs` store,
 //! applies them in order to a fresh `ProjectState`, and returns the resulting
 //! projection. Returns `None` if the project has not been initialized.
 
 use crate::{
     config::default_routing_table,
-    events::{EventStoreError, FactoryEvent, load_events},
+    events::{EventStoreError, FactoryEvent, load_events, load_events_from_store},
     project::ProjectState,
     store::event_export_dir,
 };
+use eventcore_fs::FileEventStore;
 use cfk_core::{
     state_machine::{
         architecture::AdrPhase,
@@ -51,6 +52,39 @@ pub fn load_project_state(root: &Path) -> Result<Option<ProjectState>, EventStor
 
     for envelope in envelopes.iter().skip(1) {
         apply_event(&mut state, &envelope.payload);
+    }
+
+    Ok(Some(state))
+}
+
+/// Replay all events from the `eventcore-fs` store and return the current
+/// `ProjectState`.
+///
+/// Returns `None` if the stream is empty or the first event is not
+/// `ProjectInitialized`.
+///
+/// # Errors
+/// Returns an error if the store cannot be read or any event cannot be
+/// deserialised.
+pub async fn load_project_state_v2(
+    store: &FileEventStore,
+    project_root: &std::path::Path,
+) -> Result<Option<ProjectState>, EventStoreError> {
+    let events = load_events_from_store(store).await?;
+
+    let Some(first) = events.first() else {
+        return Ok(None);
+    };
+
+    let FactoryEvent::ProjectInitialized { id } = first else {
+        return Ok(None);
+    };
+
+    let routing = default_routing_table();
+    let mut state = ProjectState::new(id.clone(), project_root.to_path_buf(), routing);
+
+    for event in events.iter().skip(1) {
+        apply_event(&mut state, event);
     }
 
     Ok(Some(state))

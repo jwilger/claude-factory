@@ -17,7 +17,8 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{events::EventStoreError, loader::load_project_state};
+use crate::{events::EventStoreError, loader::load_project_state_v2, store::eventcore_store_dir};
+use eventcore_fs::FileEventStore;
 
 /// The Claude-Factory state directory at a project root.
 const FACTORY_DIR: &str = ".claude-factory";
@@ -125,7 +126,7 @@ fn load_protected_globs(factory_dir: &Path) -> Result<ProtectedGlobs, GuardrailE
 /// Returns a [`GuardrailError`] if the project's guardrail config cannot be read
 /// or parsed, a configured glob is invalid, or the event store cannot be loaded.
 /// Callers should treat any error as a reason to block (fail closed).
-pub fn check_guardrail(
+pub async fn check_guardrail(
     project_root: &Path,
     edited_file: &Path,
     session: &SessionIdentity,
@@ -158,12 +159,19 @@ pub fn check_guardrail(
     let relative = edited_file.strip_prefix(project_root).unwrap_or(edited_file);
     let path_is_protected = globs.matches(relative);
 
-    let session_holds_active_lease = match load_project_state(project_root)? {
-        Some(state) => state
-            .leases
-            .iter()
-            .any(|lease| &lease.session_identity == session && !lease.is_expired(now)),
-        None => false,
+    let store_dir = eventcore_store_dir(project_root);
+    let session_holds_active_lease = if store_dir.exists() {
+        let store = FileEventStore::open(&store_dir)
+            .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+        match load_project_state_v2(&store, project_root).await? {
+            Some(state) => state
+                .leases
+                .iter()
+                .any(|lease| &lease.session_identity == session && !lease.is_expired(now)),
+            None => false,
+        }
+    } else {
+        false
     };
 
     Ok(decide(GuardrailFacts {

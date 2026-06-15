@@ -1,15 +1,16 @@
-//! Factory event types and file-system persistence.
+//! Factory event types and eventcore-fs persistence.
 //!
-//! Events are the source of truth. Each event is appended as a JSON file in
-//! `.claude-factory/events/v1/`. The in-memory projection is rebuilt by
-//! replaying these files on startup.
-//!
-//! File naming: `{sequence:010}-{uuid}.json` so lexicographic order equals
-//! chronological order.
+//! Events are the source of truth. Each event is appended to the
+//! `eventcore-fs` store at `.claude-factory/eventstore/`. The in-memory
+//! projection is rebuilt by replaying all events from the store on startup.
 
+#[cfg(test)]
 use crate::store::event_export_dir;
 use eventcore_fs::FileEventStore;
-use eventcore_types::{Event, EventStore, StreamId, StreamVersion, StreamWrites};
+use eventcore_types::{
+    BatchSize, Event, EventFilter, EventPage, EventReader, EventStore, StreamId, StreamVersion,
+    StreamWrites,
+};
 use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -209,6 +210,7 @@ pub struct EventEnvelope {
 }
 
 impl EventEnvelope {
+    #[cfg(test)]
     fn filename(&self) -> String {
         format!("{:010}-{}.json", self.sequence, self.id)
     }
@@ -248,9 +250,8 @@ pub fn load_events(dir: &Path) -> Result<Vec<EventEnvelope>, EventStoreError> {
 
 /// Append one event to `.claude-factory/events/v1/` and return its envelope.
 ///
-/// # Errors
-/// Returns an error if the event directory cannot be created or the file cannot
-/// be written.
+/// Used only in unit tests to build v1-format test fixtures.
+#[cfg(test)]
 pub fn append_event(
     project_root: &Path,
     sequence: u64,
@@ -324,51 +325,36 @@ pub async fn append_event_v2(
     Ok(())
 }
 
-/// Migrate all v1 events to the v2 `eventcore-fs` store.
+/// Return the number of events currently in the `eventcore-fs` stream.
 ///
-/// Reads events from `.claude-factory/events/v1/`, appends them one-by-one to
-/// the v2 store. Safe to call repeatedly — if the v2 store already has events
-/// (stream not at version 0) the migration is skipped.
+/// Used to seed the optimistic-concurrency version counter on startup.
 ///
 /// # Errors
-/// Returns an error if v1 events cannot be read or v2 append fails.
-pub async fn migrate_v1_to_v2(
-    project_root: &Path,
+/// Returns an error if the store cannot be read.
+pub async fn stream_event_count(store: &FileEventStore) -> Result<usize, EventStoreError> {
+    Ok(load_events_from_store(store).await?.len())
+}
+
+/// Read all events from the `eventcore-fs` store in ingestion order.
+///
+/// Returns an empty `Vec` if the stream is empty (project not yet initialised).
+///
+/// # Errors
+/// Returns an error if the store cannot be read or any event cannot be
+/// deserialised.
+pub async fn load_events_from_store(
     store: &FileEventStore,
-) -> Result<(), EventStoreError> {
-    let v1_events = load_events(&event_export_dir(project_root))?;
-
-    let Some(first_envelope) = v1_events.first() else {
-        return Ok(());
-    };
-
-    let first_event = first_envelope.payload.clone();
-    let stream_id = first_event.stream_id().clone();
-
-    let probe = StreamWrites::new()
-        .register_stream(stream_id.clone(), StreamVersion::new(0))
-        .map_err(|e| EventStoreError::V2Append(e.to_string()))?
-        .append(first_event)
+) -> Result<Vec<FactoryEvent>, EventStoreError> {
+    let page = EventPage::first(
+        #[expect(
+            clippy::expect_used,
+            reason = "65536 is a hard-coded non-zero literal; the only failure mode is zero, which this is not"
+        )]
+        BatchSize::new(65_536),
+    );
+    let pairs: Vec<(FactoryEvent, _)> = store
+        .read_events::<FactoryEvent>(EventFilter::all(), page)
+        .await
         .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
-
-    if store.append_events(probe).await.is_err() {
-        // Version conflict — migration already ran; nothing to do.
-        return Ok(());
-    }
-
-    // Append remaining events one at a time, each as a single-event transaction.
-    for (i, envelope) in v1_events.iter().enumerate().skip(1) {
-        let event = envelope.payload.clone();
-        let writes = StreamWrites::new()
-            .register_stream(stream_id.clone(), StreamVersion::new(i))
-            .map_err(|e| EventStoreError::V2Append(e.to_string()))?
-            .append(event)
-            .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
-        store
-            .append_events(writes)
-            .await
-            .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
-    }
-
-    Ok(())
+    Ok(pairs.into_iter().map(|(e, _)| e).collect())
 }

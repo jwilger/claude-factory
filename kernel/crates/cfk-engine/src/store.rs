@@ -1,11 +1,9 @@
-//! Event store: `SQLite` operational cache + JSON export to `.claude-factory/events/v1/`.
+//! Event store paths for the `eventcore-fs` persistent store.
 //!
-//! The kernel is event-sourced. Every state change produces an event written to:
-//! 1. `SQLite` (fast operational queries, survives restarts)
-//! 2. `.claude-factory/events/v1/<event-id>.json` (git-tracked, audit trail)
-//!
-//! Replay from JSON export can reconstruct all `SQLite` state — the JSON export
-//! is the authoritative record.
+//! The kernel is event-sourced. Every state change produces an event written
+//! to the `eventcore-fs` store at `.claude-factory/eventstore/`. The store is
+//! git-tracked (union merge on `events/**`) and is the authoritative record.
+//! In-memory projection is rebuilt by replaying the store on startup.
 
 use std::path::PathBuf;
 

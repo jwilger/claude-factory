@@ -35,8 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let first = args.next();
 
     if first.as_deref() == Some("guardrail-check") {
-        // Synchronous, short-lived path — exits the process directly.
-        run_guardrail_check(&args.collect::<Vec<_>>());
+        run_guardrail_check(&args.collect::<Vec<_>>()).await;
     }
 
     run_server(first).await
@@ -79,7 +78,7 @@ async fn run_server(project_root_arg: Option<String>) -> anyhow::Result<()> {
 /// Expects positional args `<project-root> <file> <session>`. Any malformed
 /// input or evaluation error fails closed (block), so a broken guardrail never
 /// silently permits an unguarded edit.
-fn run_guardrail_check(args: &[String]) -> ! {
+async fn run_guardrail_check(args: &[String]) -> ! {
     let [project_root, file, session] = args else {
         eprintln!("usage: cfk guardrail-check <project-root> <file> <session>");
         std::process::exit(2);
@@ -90,7 +89,7 @@ fn run_guardrail_check(args: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    match check_guardrail(Path::new(project_root), Path::new(file), &session_identity, Utc::now()) {
+    match check_guardrail(Path::new(project_root), Path::new(file), &session_identity, Utc::now()).await {
         Ok(decision) if decision.is_allowed() => std::process::exit(0),
         Ok(_) => {
             eprintln!(

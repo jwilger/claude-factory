@@ -25,9 +25,9 @@ use cfk_engine::{
     commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, normalize_submission_result, validate_gate_verdict},
     config::default_routing_table,
     emc::read_verified_slices,
-    events::{FactoryEvent, append_event, append_event_v2, migrate_v1_to_v2},
+    events::{FactoryEvent, append_event_v2},
     forge::{ForgeAdapter, GiteaForge, MemoryForge},
-    loader::{apply_event, load_project_state},
+    loader::{apply_event, load_project_state_v2},
     project::ProjectState,
     review::{handle_pr_merge, handle_pr_poll},
     runner::run_check,
@@ -254,7 +254,6 @@ struct WorkItemSummary {
 struct ServerState {
     project_root: PathBuf,
     project: Option<ProjectState>,
-    event_sequence: u64,
     event_store: FileEventStore,
     v2_stream_version: usize,
 }
@@ -263,25 +262,17 @@ impl ServerState {
     fn new(
         project_root: PathBuf,
         project: Option<ProjectState>,
-        event_sequence: u64,
         event_store: FileEventStore,
         v2_stream_version: usize,
     ) -> Self {
-        Self { project_root, project, event_sequence, event_store, v2_stream_version }
-    }
-
-    fn next_seq(&mut self) -> u64 {
-        self.event_sequence += 1;
-        self.event_sequence
+        Self { project_root, project, event_store, v2_stream_version }
     }
 
     async fn emit(&mut self, event: FactoryEvent) -> anyhow::Result<()> {
-        let seq = self.next_seq();
-        let envelope = append_event(&self.project_root, seq, event.clone())?;
-        append_event_v2(&self.event_store, event, self.v2_stream_version).await?;
+        append_event_v2(&self.event_store, event.clone(), self.v2_stream_version).await?;
         self.v2_stream_version += 1;
         if let Some(ref mut proj) = self.project {
-            apply_event(proj, &envelope.payload);
+            apply_event(proj, &event);
         }
         Ok(())
     }
@@ -346,42 +337,17 @@ impl CfkServer {
         forge: Arc<dyn ForgeAdapter>,
         session_identity: Option<String>,
     ) -> anyhow::Result<Self> {
-        let project = load_project_state(&project_root)?;
-        let event_sequence: u64 = {
-            let dir = cfk_engine::store::event_export_dir(&project_root);
-            if dir.exists() {
-                std::fs::read_dir(&dir)
-                    .ok()
-                    .map_or(0, std::iter::Iterator::count) as u64
-            } else {
-                0
-            }
-        };
-
-        // Open or create the v2 event store and run migration if needed.
         let store_dir = eventcore_store_dir(&project_root);
         std::fs::create_dir_all(&store_dir)?;
         let event_store = FileEventStore::open(&store_dir)?;
-        migrate_v1_to_v2(&project_root, &event_store).await?;
 
-        // After migration, the v2 stream version equals the number of v1 event files
-        // (since migrate_v1_to_v2 is idempotent and each v1 file maps to one v2 event).
-        let v2_stream_version: usize = {
-            let v1_dir = cfk_engine::store::event_export_dir(&project_root);
-            if v1_dir.exists() {
-                std::fs::read_dir(&v1_dir)
-                    .ok()
-                    .map_or(0, std::iter::Iterator::count)
-            } else {
-                0
-            }
-        };
+        let project = load_project_state_v2(&event_store, &project_root).await?;
+        let v2_stream_version = cfk_engine::events::stream_event_count(&event_store).await?;
 
         Ok(Self {
             state: Arc::new(RwLock::new(ServerState::new(
                 project_root,
                 project,
-                event_sequence,
                 event_store,
                 v2_stream_version,
             ))),

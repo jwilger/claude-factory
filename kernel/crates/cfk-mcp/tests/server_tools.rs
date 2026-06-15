@@ -84,13 +84,13 @@ async fn cf_init_creates_project_and_event_file() {
     assert!(json["project_id"].as_str().is_some(), "response should include project_id");
     assert!(json["root"].as_str().is_some(), "response should include root");
 
-    // Durable effect: at least one event file written under .claude-factory/events/v1/
-    let event_dir = dir.path().join(".claude-factory").join("events").join("v1");
+    // Durable effect: at least one event file written under .claude-factory/eventstore/events/
+    let event_dir = dir.path().join(".claude-factory").join("eventstore").join("events");
     let entries: Vec<_> = std::fs::read_dir(&event_dir)
-        .expect("event dir should exist")
+        .expect("eventstore events dir should exist")
         .filter_map(std::result::Result::ok)
         .collect();
-    assert_eq!(entries.len(), 1, "exactly one ProjectInitialized event should be on disk");
+    assert_eq!(entries.len(), 1, "exactly one ProjectInitialized event file should be in the eventstore");
 }
 
 #[tokio::test]
