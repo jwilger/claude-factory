@@ -8,6 +8,8 @@
 //! chronological order.
 
 use crate::store::event_export_dir;
+use eventcore_fs::FileEventStore;
+use eventcore_types::{Event, EventStore, StreamId, StreamVersion, StreamWrites};
 use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -39,6 +41,8 @@ pub enum EventStoreError {
     CreateDir { dir: PathBuf, #[source] source: io::Error },
     #[error("failed to write event file {path}: {source}")]
     WriteFile { path: PathBuf, #[source] source: io::Error },
+    #[error("v2 event store error: {0}")]
+    V2Append(String),
 }
 
 use chrono::{DateTime, Utc};
@@ -270,4 +274,101 @@ pub fn append_event(
         .map_err(|source| EventStoreError::WriteFile { path, source })?;
 
     Ok(envelope)
+}
+
+// ── eventcore-types Event impl ────────────────────────────────────────────────
+
+static FACTORY_STREAM_ID: std::sync::OnceLock<StreamId> = std::sync::OnceLock::new();
+
+impl Event for FactoryEvent {
+    fn stream_id(&self) -> &StreamId {
+        FACTORY_STREAM_ID.get_or_init(|| {
+            #[expect(
+                clippy::expect_used,
+                reason = "static stream id literal 'factory-events' is always valid; failure is impossible at runtime"
+            )]
+            StreamId::try_new("factory-events".to_string())
+                .expect("valid stream id literal")
+        })
+    }
+
+    fn event_type_name() -> &'static str {
+        "FactoryEvent"
+    }
+}
+
+// ── v2 eventcore-fs store helpers ─────────────────────────────────────────────
+
+/// Append one event to the v2 `eventcore-fs` store.
+///
+/// `expected_version` is the number of events already in the stream
+/// (0 = empty, 1 = one event exists, etc.).
+///
+/// # Errors
+/// Returns an error if the append fails.
+pub async fn append_event_v2(
+    store: &FileEventStore,
+    event: FactoryEvent,
+    expected_version: usize,
+) -> Result<(), EventStoreError> {
+    let stream_id = event.stream_id().clone();
+    let writes = StreamWrites::new()
+        .register_stream(stream_id, StreamVersion::new(expected_version))
+        .map_err(|e| EventStoreError::V2Append(e.to_string()))?
+        .append(event)
+        .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+    store
+        .append_events(writes)
+        .await
+        .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+    Ok(())
+}
+
+/// Migrate all v1 events to the v2 `eventcore-fs` store.
+///
+/// Reads events from `.claude-factory/events/v1/`, appends them one-by-one to
+/// the v2 store. Safe to call repeatedly — if the v2 store already has events
+/// (stream not at version 0) the migration is skipped.
+///
+/// # Errors
+/// Returns an error if v1 events cannot be read or v2 append fails.
+pub async fn migrate_v1_to_v2(
+    project_root: &Path,
+    store: &FileEventStore,
+) -> Result<(), EventStoreError> {
+    let v1_events = load_events(&event_export_dir(project_root))?;
+
+    let Some(first_envelope) = v1_events.first() else {
+        return Ok(());
+    };
+
+    let first_event = first_envelope.payload.clone();
+    let stream_id = first_event.stream_id().clone();
+
+    let probe = StreamWrites::new()
+        .register_stream(stream_id.clone(), StreamVersion::new(0))
+        .map_err(|e| EventStoreError::V2Append(e.to_string()))?
+        .append(first_event)
+        .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+
+    if store.append_events(probe).await.is_err() {
+        // Version conflict — migration already ran; nothing to do.
+        return Ok(());
+    }
+
+    // Append remaining events one at a time, each as a single-event transaction.
+    for (i, envelope) in v1_events.iter().enumerate().skip(1) {
+        let event = envelope.payload.clone();
+        let writes = StreamWrites::new()
+            .register_stream(stream_id.clone(), StreamVersion::new(i))
+            .map_err(|e| EventStoreError::V2Append(e.to_string()))?
+            .append(event)
+            .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+        store
+            .append_events(writes)
+            .await
+            .map_err(|e| EventStoreError::V2Append(e.to_string()))?;
+    }
+
+    Ok(())
 }

@@ -59,7 +59,7 @@ async fn run_server(project_root_arg: Option<String>) -> anyhow::Result<()> {
 
     tracing::info!("cfk starting, project_root={}", project_root.display());
 
-    let server = CfkServer::load(project_root).context("failed to load project state")?;
+    let server = CfkServer::load(project_root).await.context("failed to load project state")?;
 
     let service = server
         .serve(rmcp::transport::stdio())

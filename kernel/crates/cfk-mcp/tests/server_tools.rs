@@ -49,13 +49,15 @@ fn result_json(result: &CallToolResult) -> serde_json::Value {
     serde_json::from_str(&text).expect("result content should be valid JSON")
 }
 
-fn make_server(dir: &TempDir) -> CfkServer {
+async fn make_server(dir: &TempDir) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), MemoryForge::new())
+        .await
         .expect("server load should succeed on empty directory")
 }
 
-fn make_server_with_forge(dir: &TempDir, forge: Arc<MemoryForge>) -> CfkServer {
+async fn make_server_with_forge(dir: &TempDir, forge: Arc<MemoryForge>) -> CfkServer {
     CfkServer::load_with_forge(dir.path().to_path_buf(), forge)
+        .await
         .expect("server load should succeed on empty directory")
 }
 
@@ -75,7 +77,7 @@ async fn init_project(server: &CfkServer, dir: &TempDir) -> serde_json::Value {
 #[tokio::test]
 async fn cf_init_creates_project_and_event_file() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     let json = init_project(&server, &dir).await;
 
@@ -94,7 +96,7 @@ async fn cf_init_creates_project_and_event_file() {
 #[tokio::test]
 async fn cf_init_twice_returns_tool_error() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
     init_project(&server, &dir).await;
 
     let result = server
@@ -109,7 +111,7 @@ async fn cf_init_twice_returns_tool_error() {
 #[tokio::test]
 async fn cf_next_step_on_fresh_project_returns_no_step() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
     init_project(&server, &dir).await;
 
     let result = server
@@ -129,7 +131,7 @@ async fn cf_next_step_on_fresh_project_returns_no_step() {
 #[tokio::test]
 async fn cf_next_step_without_init_returns_tool_error() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
 
     let result = server
         .cf_next_step(Parameters(NextStepParams { phase: None, session_identity: None }))
@@ -143,7 +145,7 @@ async fn cf_next_step_without_init_returns_tool_error() {
 #[tokio::test]
 async fn tdd_slice_claim_submit_test_gate_approve() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
     init_project(&server, &dir).await;
 
     // Add a development work item.
@@ -214,7 +216,7 @@ async fn pr_poll_merge_lifecycle() {
     let dir = TempDir::new().expect("tempdir");
     let forge = MemoryForge::new();
 
-    let server = make_server_with_forge(&dir, Arc::clone(&forge));
+    let server = make_server_with_forge(&dir, Arc::clone(&forge)).await;
     init_project(&server, &dir).await;
 
     // Add a review-phase work item.
@@ -309,7 +311,7 @@ async fn pr_poll_merge_lifecycle() {
 #[tokio::test]
 async fn invalid_work_item_uuid_returns_mcp_error() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
     init_project(&server, &dir).await;
 
     // cf_claim with a non-UUID work_item_id should return McpError (invalid_params).
@@ -334,7 +336,7 @@ fn invalid_phase_string_rejected_at_deserialization() {
 #[tokio::test]
 async fn gate_with_same_author_and_reviewer_returns_error() {
     let dir = TempDir::new().expect("tempdir");
-    let server = make_server(&dir);
+    let server = make_server(&dir).await;
     init_project(&server, &dir).await;
 
     // Add and auto-claim a development item.

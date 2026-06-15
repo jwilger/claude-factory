@@ -25,13 +25,15 @@ use cfk_engine::{
     commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, normalize_submission_result, validate_gate_verdict},
     config::default_routing_table,
     emc::read_verified_slices,
-    events::{FactoryEvent, append_event},
+    events::{FactoryEvent, append_event, append_event_v2, migrate_v1_to_v2},
     forge::{ForgeAdapter, GiteaForge, MemoryForge},
     loader::{apply_event, load_project_state},
     project::ProjectState,
     review::{handle_pr_merge, handle_pr_poll},
     runner::run_check,
+    store::eventcore_store_dir,
 };
+use eventcore_fs::FileEventStore;
 use rmcp::{
     ErrorData as McpError,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -253,11 +255,19 @@ struct ServerState {
     project_root: PathBuf,
     project: Option<ProjectState>,
     event_sequence: u64,
+    event_store: FileEventStore,
+    v2_stream_version: usize,
 }
 
 impl ServerState {
-    fn new(project_root: PathBuf, project: Option<ProjectState>, event_sequence: u64) -> Self {
-        Self { project_root, project, event_sequence }
+    fn new(
+        project_root: PathBuf,
+        project: Option<ProjectState>,
+        event_sequence: u64,
+        event_store: FileEventStore,
+        v2_stream_version: usize,
+    ) -> Self {
+        Self { project_root, project, event_sequence, event_store, v2_stream_version }
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -265,9 +275,11 @@ impl ServerState {
         self.event_sequence
     }
 
-    fn emit(&mut self, event: FactoryEvent) -> anyhow::Result<()> {
+    async fn emit(&mut self, event: FactoryEvent) -> anyhow::Result<()> {
         let seq = self.next_seq();
-        let envelope = append_event(&self.project_root, seq, event)?;
+        let envelope = append_event(&self.project_root, seq, event.clone())?;
+        append_event_v2(&self.event_store, event, self.v2_stream_version).await?;
+        self.v2_stream_version += 1;
         if let Some(ref mut proj) = self.project {
             apply_event(proj, &envelope.payload);
         }
@@ -300,7 +312,7 @@ impl CfkServer {
     ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
-    pub fn load(project_root: PathBuf) -> anyhow::Result<Self> {
+    pub async fn load(project_root: PathBuf) -> anyhow::Result<Self> {
         let forge: Arc<dyn ForgeAdapter> = match GiteaForge::from_env() {
             Ok(f) => f,
             Err(_) => MemoryForge::new(),
@@ -309,7 +321,7 @@ impl CfkServer {
         let session_identity = std::env::var("CLAUDE_CODE_SESSION_ID")
             .ok()
             .filter(|s| !s.trim().is_empty());
-        Self::load_with_forge_and_session(project_root, forge, session_identity)
+        Self::load_with_forge_and_session(project_root, forge, session_identity).await
     }
 
     /// Load with an explicit forge adapter (used in tests). The session identity
@@ -318,18 +330,18 @@ impl CfkServer {
     ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
-    pub fn load_with_forge(
+    pub async fn load_with_forge(
         project_root: PathBuf,
         forge: Arc<dyn ForgeAdapter>,
     ) -> anyhow::Result<Self> {
-        Self::load_with_forge_and_session(project_root, forge, None)
+        Self::load_with_forge_and_session(project_root, forge, None).await
     }
 
     /// Load with an explicit forge adapter and session identity.
     ///
     /// # Errors
     /// Returns an error if the event log cannot be read.
-    pub fn load_with_forge_and_session(
+    pub async fn load_with_forge_and_session(
         project_root: PathBuf,
         forge: Arc<dyn ForgeAdapter>,
         session_identity: Option<String>,
@@ -346,11 +358,32 @@ impl CfkServer {
             }
         };
 
+        // Open or create the v2 event store and run migration if needed.
+        let store_dir = eventcore_store_dir(&project_root);
+        std::fs::create_dir_all(&store_dir)?;
+        let event_store = FileEventStore::open(&store_dir)?;
+        migrate_v1_to_v2(&project_root, &event_store).await?;
+
+        // After migration, the v2 stream version equals the number of v1 event files
+        // (since migrate_v1_to_v2 is idempotent and each v1 file maps to one v2 event).
+        let v2_stream_version: usize = {
+            let v1_dir = cfk_engine::store::event_export_dir(&project_root);
+            if v1_dir.exists() {
+                std::fs::read_dir(&v1_dir)
+                    .ok()
+                    .map_or(0, std::iter::Iterator::count)
+            } else {
+                0
+            }
+        };
+
         Ok(Self {
             state: Arc::new(RwLock::new(ServerState::new(
                 project_root,
                 project,
                 event_sequence,
+                event_store,
+                v2_stream_version,
             ))),
             forge,
             session_identity,
@@ -434,18 +467,14 @@ any other `cf_*` tool. Returns the new project ID.")]
 
         let project_id = cfk_core::types::ids::ProjectId::new();
         let routing = default_routing_table();
-        let mut project_state = ProjectState::new(project_id.clone(), root.clone(), routing);
+        let project_state = ProjectState::new(project_id.clone(), root.clone(), routing);
 
-        let seq = guard.next_seq();
-        let envelope = append_event(
-            &root,
-            seq,
-            FactoryEvent::ProjectInitialized { id: project_id.clone() },
-        )
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        apply_event(&mut project_state, &envelope.payload);
+        // Set project before emitting so apply_event in emit() can update it.
         guard.project = Some(project_state);
+
+        guard.emit(FactoryEvent::ProjectInitialized { id: project_id.clone() })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         // Set up project-local Claude Code settings with conductor defaults.
         let claude_dir = root.join(".claude");
@@ -558,6 +587,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
 
                 guard
                     .emit(FactoryEvent::LeaseGranted { lease })
+                    .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
                 // Start TDD slice state.
@@ -568,7 +598,70 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
                         work_item_id: wid,
                         author_identity,
                     })
+                    .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
+        }
+
+        // Auto-complete dev items that reached TddPhase::Done and spin up a
+        // paired Review work item for each so the PR flow can start immediately.
+        {
+            let done_dev: Vec<(WorkItemId, String)> = guard
+                .project
+                .as_ref()
+                .map(|p| {
+                    p.work_items
+                        .iter()
+                        .filter(|i| {
+                            i.phase == PhaseKind::Development
+                                && i.status == WorkItemStatus::InProgress
+                                && p.dev_states
+                                    .get(&i.id)
+                                    .and_then(|d| d.current_phase())
+                                    == Some(&TddPhase::Done)
+                        })
+                        .map(|i| (i.id.clone(), i.description.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for (wid, description) in done_dev {
+                guard
+                    .emit(FactoryEvent::TddSliceDone { work_item_id: wid.clone() })
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                guard
+                    .emit(FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() })
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                // Create a paired Review work item for the PR flow.
+                let review_item = WorkItem::new(
+                    WorkItemId::new(),
+                    PhaseKind::Review,
+                    WorkType::PrCommentTriage,
+                    description,
+                );
+                let review_wid = review_item.id.clone();
+                guard
+                    .emit(FactoryEvent::WorkItemAdded { work_item: review_item })
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                // Auto-claim the new review item under this session so the
+                // conductor can immediately dispatch an OpenPr step for it.
+                if let Some(ref session_id) = resolved_session {
+                    let proj = guard.project.as_ref()
+                        .ok_or_else(|| McpError::internal_error(
+                            "project state lost after review item add", None,
+                        ))?;
+                    let lease = handle_claim(proj, &review_wid, session_id)
+                        .map_err(|e| command_error(&e))?;
+                    guard
+                        .emit(FactoryEvent::LeaseGranted { lease })
+                        .await
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                }
             }
         }
 
@@ -611,6 +704,7 @@ release it on completion or failure.")]
 
         guard
             .emit(FactoryEvent::LeaseGranted { lease })
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
@@ -657,6 +751,7 @@ The item returns to `Ready` status and can be claimed again.")]
 
         guard
             .emit(FactoryEvent::LeaseReleased { lease_id, work_item_id })
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({ "released": params.work_item_id }))
@@ -769,7 +864,7 @@ For other phases: any JSON value is accepted as evidence.")]
         // Append events.
         let mut guard = self.state.write().await;
         for event in events {
-            guard.emit(event).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            guard.emit(event).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
         // Serialize outcome.
@@ -890,7 +985,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
                 adr_id: adr_id.clone(),
                 accepted,
                 reason,
-            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
             // Only complete the work item when the ADR is accepted. On veto the item
             // transitions to PendingHumanDecision — cf_next_step will surface an
@@ -898,7 +993,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
             if accepted {
                 guard.emit(FactoryEvent::WorkItemCompleted {
                     work_item_id: work_item_id.clone(),
-                }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
             }
 
             // Project ARCHITECTURE.md when an ADR is accepted.
@@ -938,6 +1033,7 @@ For ADR review: `approved` accepts the ADR into the registry; `vetoed` rejects i
                 verdict,
                 reviewer_id,
             })
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
@@ -998,6 +1094,7 @@ Add a work item to the backlog. \
 
         guard
             .emit(FactoryEvent::WorkItemAdded { work_item: item })
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({ "work_item_id": item_id }))
@@ -1075,6 +1172,7 @@ Returns counts of ingested and skipped slices.")]
 
             guard
                 .emit(FactoryEvent::WorkItemAdded { work_item: item })
+                .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
             new_ids.push(id_str);
@@ -1134,6 +1232,7 @@ Provide `work_item_id` to advance the TDD state machine based on the result.")]
                     passed: result.passed,
                     first_error,
                 })
+                .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
@@ -1228,7 +1327,7 @@ target branch (usually `main`).")]
             work_item_id,
             pr_number: PrNumber::new(pr_number_raw),
             pr_url: pr_url_typed,
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
@@ -1275,14 +1374,17 @@ Returns a summary of CI status and any new triage items created.")]
                     triage_ids.push(triage_item_id.to_string());
                     let mut guard = self.state.write().await;
                     guard.emit(FactoryEvent::WorkItemAdded { work_item: triage_item })
+                        .await
                         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                     guard.emit(event.clone())
+                        .await
                         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 }
                 FactoryEvent::ReviewAllGreen { .. } => {
                     all_green = true;
                     let mut guard = self.state.write().await;
                     guard.emit(event.clone())
+                        .await
                         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 }
                 _ => {}
@@ -1317,7 +1419,7 @@ in `all_green` state (CI passing + approved). Marks the slice as done.")]
 
         let mut guard = self.state.write().await;
         for event in events {
-            guard.emit(event).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            guard.emit(event).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
         content_json(&serde_json::json!({
@@ -1359,7 +1461,7 @@ names to queue for event modeling on human approval.")]
             work_item_id,
             brief_content: params.brief_content.clone(),
             workflows: params.workflows.clone(),
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
@@ -1402,7 +1504,7 @@ is completed. If rejected, the discovery dialogue resets for a re-run.")]
         let mut guard = self.state.write().await;
         guard.emit(FactoryEvent::DiscoveryApproved {
             work_item_id: work_item_id.clone(),
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut queued_ids: Vec<String> = Vec::new();
 
@@ -1416,12 +1518,13 @@ is completed. If rejected, the discovery dialogue resets for a re-run.")]
                 );
                 queued_ids.push(item.id.to_string());
                 guard.emit(FactoryEvent::WorkItemAdded { work_item: item })
+                    .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             }
 
             guard.emit(FactoryEvent::WorkItemCompleted {
                 work_item_id: work_item_id.clone(),
-            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
         content_json(&serde_json::json!({
@@ -1473,7 +1576,7 @@ Returns the assigned ADR ID. After submission the ADR enters review gate.")]
             adr_id: adr_id.clone(),
             title: params.title.clone(),
             content: params.content.clone(),
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
@@ -1528,11 +1631,11 @@ design-system agent). Marks the work item as done. \
             name: params.name.clone(),
             kind,
             slice_ref: params.slice_ref.clone(),
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         guard.emit(FactoryEvent::WorkItemCompleted {
             work_item_id: work_item_id.clone(),
-        }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({
             "work_item_id": params.work_item_id,
@@ -1572,6 +1675,7 @@ Returns the IDs of any new work items created.")]
                 );
                 let id_str = item.id.to_string();
                 guard.emit(FactoryEvent::WorkItemAdded { work_item: item })
+                    .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 new_item_ids.push(id_str);
             }
@@ -1585,7 +1689,7 @@ Returns the IDs of any new work items created.")]
                             .and_then(|u| WorkItemId::try_new(u).ok())
                     })
                     .collect(),
-            }).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
         content_json(&serde_json::json!({
@@ -1633,6 +1737,7 @@ increments the abandoned counter visible through `cf_status`.")]
         let mut guard = self.state.write().await;
         guard
             .emit(FactoryEvent::WorkItemAbandoned { work_item_id })
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({ "abandoned": params.work_item_id }))
@@ -1684,6 +1789,7 @@ and average token costs, which justify and guide routing table tuning.")]
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
         guard.emit(event)
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         content_json(&serde_json::json!({ "recorded": true }))

@@ -40,6 +40,8 @@ anyhow = "1"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
+eventcore-types = "1.0.1"
+eventcore-fs = "1.0.1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

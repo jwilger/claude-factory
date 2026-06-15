@@ -15,6 +15,14 @@ pub fn event_export_dir(project_root: &std::path::Path) -> PathBuf {
     project_root.join(".claude-factory").join("events").join("v1")
 }
 
+/// Root directory for the `eventcore-fs` v2 event store.
+///
+/// `eventcore-fs` manages subdirectory layout internally under this root.
+#[must_use]
+pub fn eventcore_store_dir(project_root: &std::path::Path) -> PathBuf {
+    project_root.join(".claude-factory").join("eventstore")
+}
+
 /// Path to the `SQLite` operational cache for a project.
 ///
 /// Lives outside the repo (XDG state dir) so it is never accidentally committed.
