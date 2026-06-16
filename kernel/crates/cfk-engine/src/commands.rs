@@ -9,11 +9,13 @@ use cfk_core::{
     routing::RoutingError,
     state_machine::work_item::{next_ready, validate_claim},
     types::{
+        architecture::AdrStatus,
         gate::{GateKind, GateVerdict},
         ids::{LeaseId, StepId, WorkItemId},
         lease::{Lease, SessionIdentity},
         metrics::{MetricsSummary, StepOutcome, WorkTypeMetricEntry},
         phase::PhaseKind,
+        routing::WorkType,
         step::{IdleReason, ReadyStep},
         tdd::TddPhase,
     },
@@ -229,6 +231,66 @@ fn design_step(
     }))
 }
 
+/// Build the next step for a per-slice triage work item (ADR 0011).
+///
+/// Triage items are dispatched as a single interactive agent step that decides
+/// whether follow-up work (an ADR, or design components) is required. The agent
+/// is given the same context it needs to judge: the accepted-ADR summary for
+/// architecture triage, the design-inventory summary for design triage.
+///
+/// Returns `Ok(None)` for any non-triage work item.
+fn triage_step(
+    state: &ProjectState,
+    work_item_id: &WorkItemId,
+) -> Result<Option<ReadyStep>, CommandError> {
+    let Some(item) = state.work_items.iter().find(|i| &i.id == work_item_id) else {
+        return Ok(None);
+    };
+
+    let context_summary = match item.work_type {
+        WorkType::ArchitectureTriage => {
+            let lines: Vec<String> = state
+                .adrs
+                .iter()
+                .filter(|r| r.status == AdrStatus::Accepted)
+                .map(|r| format!("- {}: {}", r.title, r.content))
+                .collect();
+            if lines.is_empty() { "None yet.".to_string() } else { lines.join("\n") }
+        }
+        WorkType::DesignTriage => {
+            let lines: Vec<String> = state
+                .design_inventory
+                .iter()
+                .map(|c| format!("- {} ({:?})", c.name, c.kind))
+                .collect();
+            if lines.is_empty() { "None yet.".to_string() } else { lines.join("\n") }
+        }
+        _ => return Ok(None),
+    };
+
+    let Some(action) = cfk_core::steps::triage_step_action(
+        item.work_type,
+        &item.description,
+        &context_summary,
+        &state.routing,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(ReadyStep {
+        step_id: StepId::new(),
+        work_item_id: work_item_id.clone(),
+        phase: item.phase,
+        action,
+    }))
+}
+
+/// Whether a work type is a per-slice triage gate (ADR 0011).
+const fn is_triage(work_type: WorkType) -> bool {
+    matches!(work_type, WorkType::ArchitectureTriage | WorkType::DesignTriage)
+}
+
 /// Handle `cf_next_step` — find the next ready work item and build the step.
 ///
 /// For development-phase items already in progress, returns the TDD-phase-
@@ -307,7 +369,12 @@ pub fn handle_next_step(
         if item.phase != PhaseKind::Architecture {
             continue;
         }
-        if let Some(step) = architecture_step(state, &item.id)? {
+        let step = if is_triage(item.work_type) {
+            triage_step(state, &item.id)?
+        } else {
+            architecture_step(state, &item.id)?
+        };
+        if let Some(step) = step {
             return Ok(NextStepResponse::Ready(step));
         }
     }
@@ -323,12 +390,27 @@ pub fn handle_next_step(
         if item.phase != PhaseKind::DesignSystem {
             continue;
         }
-        if let Some(step) = design_step(state, &item.id)? {
+        let step = if is_triage(item.work_type) {
+            triage_step(state, &item.id)?
+        } else {
+            design_step(state, &item.id)?
+        };
+        if let Some(step) = step {
             return Ok(NextStepResponse::Ready(step));
         }
     }
 
     // 2. Fall back to any ready item (including non-dev phases).
+    next_ready_step(state, phase_filter)
+}
+
+/// Build the step for the first ready work item (in phase order), or `Idle` if
+/// none. Per-slice triage gates get their interactive triage step; every other
+/// ready item gets a generic spawn step that the conductor claims and runs.
+fn next_ready_step(
+    state: &ProjectState,
+    phase_filter: Option<PhaseKind>,
+) -> Result<NextStepResponse, CommandError> {
     let items: Vec<_> = state
         .work_items
         .iter()
@@ -340,18 +422,20 @@ pub fn handle_next_step(
         return Ok(NextStepResponse::Idle(IdleReason::NoReadyWork));
     };
 
+    if is_triage(item.work_type)
+        && let Some(step) = triage_step(state, &item.id)?
+    {
+        return Ok(NextStepResponse::Ready(step));
+    }
+
     let executor = cfk_core::routing::resolve(&state.routing, item.work_type)?.clone();
-
-    let prompt = cfk_core::prompts::generic_step(&item.description);
-    let step_id = StepId::new();
-
     let step = ReadyStep {
-        step_id,
+        step_id: StepId::new(),
         work_item_id: item.id.clone(),
         phase: item.phase,
         action: cfk_core::types::step::StepAction::SpawnAgent {
             executor,
-            prompt,
+            prompt: cfk_core::prompts::generic_step(&item.description),
             output_schema: None,
         },
     };

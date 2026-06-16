@@ -137,6 +137,33 @@ async fn verified_slices_spawn_architecture_triage_chain_heads() {
 }
 
 #[tokio::test]
+async fn architecture_triage_dispatches_interactive_agent() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+    write_verified_model(dir.path(), "checkout", &[("add-to-cart", "Add to cart", "command")]);
+
+    // First cf_next_step spawns the chain head AND returns its triage step.
+    let result = server
+        .cf_next_step(Parameters(NextStepParams { phase: None, session_identity: None }))
+        .await
+        .expect("cf_next_step");
+    let json = result_json(&result);
+
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["action"]["type"], "spawn_agent");
+    assert_eq!(
+        json["action"]["executor"]["agent_name"], "architecture-triage",
+        "triage must route to the dedicated triage agent, not the ADR drafter"
+    );
+    assert!(
+        json["action"]["prompt"].as_str().unwrap().contains("Architecture triage"),
+        "triage step must carry the triage prompt; got: {}",
+        json["action"]["prompt"]
+    );
+}
+
+#[tokio::test]
 async fn reconciliation_is_idempotent_across_calls() {
     let dir = TempDir::new().unwrap();
     let server = make_server(&dir).await;

@@ -122,6 +122,42 @@ pub fn discovery_brief_approval(description: &str, brief: &str) -> HumanQuestion
 }
 
 #[must_use]
+pub fn architecture_triage(description: &str, accepted_summary: &str) -> StepPrompt {
+    make_prompt(format!(
+        "Architecture triage for slice: {description}\n\n\
+         Existing accepted ADRs:\n{accepted_summary}\n\n\
+         Decide whether building this slice forces a NEW or CHANGED architectural \
+         decision — a cross-cutting choice not already settled by the accepted ADRs \
+         (persistence, boundaries, protocols, cross-slice contracts). Most slices do \
+         not; a project's earliest slices often do, to set the baseline.\n\
+         This is an interactive decision: when the call is non-obvious, confirm with \
+         the operator before deciding.\n\
+         - No new decision needed → the slice fast-passes this gate.\n\
+         - A decision is needed → an ADR will be drafted and reviewed next.\n\
+         Submit via `cf_triage_submit` with `needs_followup` (true iff an ADR is \
+         required) and a one-paragraph `rationale`."
+    ))
+}
+
+#[must_use]
+pub fn design_triage(description: &str, inventory_summary: &str) -> StepPrompt {
+    make_prompt(format!(
+        "Design triage for slice: {description}\n\n\
+         Existing design inventory:\n{inventory_summary}\n\n\
+         Decide whether this slice needs UI components built. First: does the slice \
+         touch the UI at all? Pure command/automation slices do not — they fast-pass. \
+         If it has a UI surface, decide whether the full set of quarks → atoms → \
+         molecules → organisms → templates → pages it requires already exists.\n\
+         This is an interactive decision: collaborate with the operator on UX gaps.\n\
+         - No UI, or inventory already sufficient → the slice fast-passes this gate.\n\
+         - Components are missing → they will be built next (reusable elements to the \
+         platform UI library; slice-specific ones owned by the slice).\n\
+         Submit via `cf_triage_submit` with `needs_followup` (true iff components must \
+         be built) and a one-paragraph `rationale`."
+    ))
+}
+
+#[must_use]
 pub fn architecture_draft_adr(description: &str, accepted_summary: &str) -> StepPrompt {
     make_prompt(format!(
         "Draft an Architecture Decision Record for: {description}\n\n\

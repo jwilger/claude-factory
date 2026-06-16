@@ -244,6 +244,39 @@ pub fn design_step_action(
     Ok(Some(action))
 }
 
+/// Determine the `StepAction` for a per-slice triage work item (ADR 0011).
+///
+/// `context_summary` is the accepted-ADR summary for `ArchitectureTriage` or the
+/// design-inventory summary for `DesignTriage` — the existing context the triage
+/// agent needs to decide whether follow-up work is required.
+///
+/// Returns `Ok(None)` for any non-triage work type.
+///
+/// # Errors
+/// Returns `StepError::Routing` if the routing table has no entry for the triage
+/// work type.
+pub fn triage_step_action(
+    work_type: WorkType,
+    description: &str,
+    context_summary: &str,
+    routing: &RoutingTable,
+) -> Result<Option<StepAction>, StepError> {
+    let action = match work_type {
+        WorkType::ArchitectureTriage => {
+            let executor = resolve(routing, WorkType::ArchitectureTriage)?.clone();
+            let prompt = prompts::architecture_triage(description, context_summary);
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        WorkType::DesignTriage => {
+            let executor = resolve(routing, WorkType::DesignTriage)?.clone();
+            let prompt = prompts::design_triage(description, context_summary);
+            StepAction::SpawnAgent { executor, prompt, output_schema: None }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(action))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
