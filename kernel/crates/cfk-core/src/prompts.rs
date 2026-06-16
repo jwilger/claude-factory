@@ -82,7 +82,10 @@ pub fn tdd_impl_review(description: &str) -> StepPrompt {
          veto if the type's default/structural constructor (dataclass __init__, exported\n\
          class constructor, pub tuple struct) or a conversion method bypasses the parser.\n\
          - Railway-oriented errors: fallible ops return Result; no unwrap/expect/panic in\n\
-         product code.\n\
+         product code. Public functions must be TOTAL over all inputs their parameter\n\
+         types admit — veto unchecked arithmetic/indexing that can panic or wrap on a\n\
+         constructable input (e.g. u64 subtraction when amount may exceed balance), even\n\
+         if no test drives that path; such guards are panic-safety, not ahead-of-tests code.\n\
          - Observable contract: every field/variant/return value of a public type is\n\
          reachable by callers and asserted by a test (no private accessorless success field).\n\
          Return verdict: approved or vetoed with reason."
