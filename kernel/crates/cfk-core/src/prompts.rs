@@ -88,6 +88,11 @@ pub fn tdd_impl_review(description: &str) -> StepPrompt {
          if no test drives that path; such guards are panic-safety, not ahead-of-tests code.\n\
          - Observable contract: every field/variant/return value of a public type is\n\
          reachable by callers and asserted by a test (no private accessorless success field).\n\
+         - Domain-completeness: a validating constructor must reject EVERY domain-illegal\n\
+         value, not just bad shape (e.g. a zero-prefixed E.164 country code); totality means\n\
+         the WIDEST admissible input is handled, incl. steps adjacent to the guarded op\n\
+         (a rounding bias before division, a lossy coercion before the guard); an error\n\
+         payload naming 'which element' must name the semantically-correct one.\n\
          Return verdict: approved or vetoed with reason."
     ))
 }
