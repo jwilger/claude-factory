@@ -45,8 +45,8 @@
             pkgs.cargo-edit         # cargo add/rm
             pkgs.cargo-watch        # file-watching test runner
 
-            # Lean4 for emc verification (via elan — the Lean version manager)
-            pkgs.elan               # provides `lake` and `lean`
+            # Lean4 for emc verification
+            pkgs.lean4              # provides `lean` and `lake` directly
 
             # Quint for emc behavioral verification
             quint
@@ -58,7 +58,6 @@
             pkgs.openssl
             pkgs.pkg-config
 
-            # SQLite (for cfk-engine's eventcore-sqlite)
             pkgs.sqlite
           ];
 
