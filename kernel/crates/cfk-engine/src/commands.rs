@@ -405,8 +405,13 @@ pub fn handle_next_step(
 }
 
 /// Build the step for the first ready work item (in phase order), or `Idle` if
-/// none. Per-slice triage gates get their interactive triage step; every other
-/// ready item gets a generic spawn step that the conductor claims and runs.
+/// none.
+///
+/// A ready item is dispatched with its **phase-specific** step so the agent gets
+/// the rich prompt immediately — discovery dialogue, ADR draft/review gate,
+/// design build, or triage — rather than a generic placeholder it would only
+/// escape after a claim. Phases without a dedicated builder (event modeling, an
+/// unclaimed development item) fall back to a generic spawn the conductor claims.
 fn next_ready_step(
     state: &ProjectState,
     phase_filter: Option<PhaseKind>,
@@ -422,9 +427,18 @@ fn next_ready_step(
         return Ok(NextStepResponse::Idle(IdleReason::NoReadyWork));
     };
 
-    if is_triage(item.work_type)
-        && let Some(step) = triage_step(state, &item.id)?
-    {
+    let phase_specific = if is_triage(item.work_type) {
+        triage_step(state, &item.id)?
+    } else {
+        match item.phase {
+            PhaseKind::Discovery => discovery_step(state, &item.id)?,
+            PhaseKind::Architecture => architecture_step(state, &item.id)?,
+            PhaseKind::DesignSystem => design_step(state, &item.id)?,
+            PhaseKind::Review => review_step(state, &item.id)?,
+            PhaseKind::EventModeling | PhaseKind::Development => None,
+        }
+    };
+    if let Some(step) = phase_specific {
         return Ok(NextStepResponse::Ready(step));
     }
 

@@ -13,10 +13,11 @@
 
 use std::path::Path;
 
-use cfk_core::types::phase::PhaseKind;
+use cfk_core::types::{phase::PhaseKind, routing::WorkType};
 use cfk_engine::forge::MemoryForge;
 use cfk_mcp::server::{
-    CfkServer, IngestSlicesParams, InitParams, NextStepParams, PhaseFilterParams, TriageSubmitParams,
+    AdrSubmitParams, BacklogAddParams, CfkServer, IngestSlicesParams, InitParams, NextStepParams,
+    PhaseFilterParams, TriageSubmitParams,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, RawContent};
@@ -281,6 +282,58 @@ async fn cf_ingest_slices_seeds_triage_not_development() {
     // Consistent with cf_next_step reconciliation: it must not double-spawn.
     next_step(&server).await;
     assert_eq!(backlog(&server, PhaseKind::Architecture).await.len(), 2);
+}
+
+#[tokio::test]
+async fn ready_architecture_item_gets_draft_prompt_then_review_gate() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+
+    let add = server
+        .cf_backlog_add(Parameters(BacklogAddParams {
+            phase: PhaseKind::Architecture,
+            work_type: WorkType::AdrDrafting,
+            description: "Choose the persistence store".to_string(),
+        }))
+        .await
+        .expect("cf_backlog_add");
+    let wid = result_json(&add)["work_item_id"].as_str().unwrap().to_string();
+
+    // A ready ADR item must dispatch the real draft prompt, not a generic one.
+    let step1 = server
+        .cf_next_step(Parameters(NextStepParams { phase: None, session_identity: None }))
+        .await
+        .expect("cf_next_step");
+    let j1 = result_json(&step1);
+    assert_eq!(j1["action"]["type"], "spawn_agent");
+    assert!(
+        j1["action"]["prompt"].as_str().unwrap().contains("Architecture Decision Record"),
+        "ready ADR item must get the draft prompt; got: {}",
+        j1["action"]["prompt"]
+    );
+
+    // After submitting the draft, the next step must be the ADR review gate.
+    server
+        .cf_adr_submit(Parameters(AdrSubmitParams {
+            work_item_id: wid,
+            title: "Adopt eventcore-fs".to_string(),
+            content: "## Context\nx\n## Decision\ny\n## Consequences\nz".to_string(),
+        }))
+        .await
+        .expect("cf_adr_submit");
+
+    let step2 = server
+        .cf_next_step(Parameters(NextStepParams { phase: None, session_identity: None }))
+        .await
+        .expect("cf_next_step");
+    let j2 = result_json(&step2);
+    assert_eq!(
+        j2["action"]["type"], "gate_review",
+        "after an ADR draft, the review gate must surface; got: {}",
+        j2["action"]
+    );
+    assert_eq!(j2["action"]["gate_kind"], "adr_review");
 }
 
 #[tokio::test]
