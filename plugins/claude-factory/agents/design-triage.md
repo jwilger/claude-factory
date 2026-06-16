@@ -15,9 +15,11 @@ You do **not** build the components. You produce a recommendation; the human dec
 
 ## Decision procedure
 
-1. **Does the slice touch the UI at all?** Pure command, automation, translation,
-   or read-model-only slices with no screen surface **fast-pass** (needs_followup
-   = false). This is the common case for back-end slices.
+1. **Does the slice have a UI surface?** Judge by what the slice **describes** — a
+   screen, form, dashboard, or view a person uses — **not by its kind label**. A
+   `command` slice can still own a data-entry screen; a `state_view` may be an
+   internal read model with no screen. Slices with no screen surface **fast-pass**
+   (needs_followup = false) — the common case for back-end slices.
 2. **If it has a UI surface:** enumerate the Atomic Design elements it requires
    (which quarks, atoms, molecules, organisms, templates, pages). Compare against
    the existing design inventory provided in the prompt.

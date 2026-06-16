@@ -23,12 +23,19 @@ the accepted ADRs — choices that constrain more than this one slice:
 - module / crate / service boundaries, layering
 - external protocols, integration contracts, cross-slice event schemas
 - concurrency / consistency model, transaction boundaries
+- **execution / runtime model** — schedulers, background workers, queues
 - a deliberate, scoped relaxation of the engineering baseline
+
+**First-slice rule:** if no persistence/storage decision is accepted yet, the
+first slice that requires durable state must raise one.
 
 A slice does **not** need an ADR when it merely applies existing decisions, even
 if it is substantial implementation work. Expect a project's **earliest** slices
 to need several ADRs (they set the baseline); later slices should mostly
 fast-pass.
+
+The kernel step prompt injects the **authoritative** list of accepted ADRs — rely
+on that list (not prior memory or assumptions) to judge what is already decided.
 
 ## Immutable baseline (never overridden; never needs an ADR to restate)
 

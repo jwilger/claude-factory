@@ -125,14 +125,22 @@ pub fn discovery_brief_approval(description: &str, brief: &str) -> HumanQuestion
 pub fn architecture_triage(description: &str, accepted_summary: &str) -> StepPrompt {
     make_prompt(format!(
         "Architecture triage for slice: {description}\n\n\
-         Existing accepted ADRs:\n{accepted_summary}\n\n\
-         Decide whether building this slice forces a NEW or CHANGED architectural \
-         decision — a cross-cutting choice not already settled by the accepted ADRs \
-         (persistence, boundaries, protocols, cross-slice contracts). Most slices do \
-         not; a project's earliest slices often do, to set the baseline.\n\
+         Accepted ADRs (authoritative — this list, not prior memory, defines what \
+         is already decided):\n{accepted_summary}\n\n\
+         Decide whether building this slice forces a NEW or CHANGED cross-cutting \
+         architectural decision not already settled above. Warranting categories:\n\
+         - persistence / storage strategy and schema evolution\n\
+         - module / service boundaries and layering\n\
+         - external protocols and integration contracts; cross-slice event schemas\n\
+         - concurrency / consistency model, transaction boundaries\n\
+         - execution / runtime model (schedulers, background workers, queues)\n\
+         - a deliberate, scoped relaxation of the engineering baseline\n\
+         If NO persistence/storage decision is accepted yet, the first slice that \
+         needs durable state must raise one. Most later slices simply apply existing \
+         decisions and fast-pass, even when they are substantial work.\n\
          This is an interactive decision: when the call is non-obvious, confirm with \
          the operator before deciding.\n\
-         - No new decision needed → the slice fast-passes this gate.\n\
+         - No new decision needed → fast-pass.\n\
          - A decision is needed → an ADR will be drafted and reviewed next.\n\
          Submit via `cf_triage_submit` with `needs_followup` (true iff an ADR is \
          required) and a one-paragraph `rationale`."
@@ -143,13 +151,19 @@ pub fn architecture_triage(description: &str, accepted_summary: &str) -> StepPro
 pub fn design_triage(description: &str, inventory_summary: &str) -> StepPrompt {
     make_prompt(format!(
         "Design triage for slice: {description}\n\n\
-         Existing design inventory:\n{inventory_summary}\n\n\
-         Decide whether this slice needs UI components built. First: does the slice \
-         touch the UI at all? Pure command/automation slices do not — they fast-pass. \
-         If it has a UI surface, decide whether the full set of quarks → atoms → \
-         molecules → organisms → templates → pages it requires already exists.\n\
+         Existing design inventory (each entry is `name (AtomicKind)`):\n\
+         {inventory_summary}\n\n\
+         Decide whether this slice needs UI components built.\n\
+         1. Does the slice have a UI surface? Judge by what the slice DESCRIBES — a \
+         screen, form, dashboard, or view a person uses — NOT by its kind label: a \
+         `command` slice can still own a data-entry screen, and a `state_view` may be \
+         an internal read model with no screen. Slices with no screen surface \
+         fast-pass.\n\
+         2. If it has a UI surface, enumerate the quarks → atoms → molecules → \
+         organisms → templates → pages it needs and compare against the inventory \
+         above. If every element already exists, fast-pass.\n\
          This is an interactive decision: collaborate with the operator on UX gaps.\n\
-         - No UI, or inventory already sufficient → the slice fast-passes this gate.\n\
+         - No UI surface, or inventory already sufficient → fast-pass.\n\
          - Components are missing → they will be built next (reusable elements to the \
          platform UI library; slice-specific ones owned by the slice).\n\
          Submit via `cf_triage_submit` with `needs_followup` (true iff components must \
