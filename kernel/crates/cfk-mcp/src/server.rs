@@ -26,7 +26,7 @@ use cfk_engine::{
     config::default_routing_table,
     emc::read_verified_slices,
     events::{FactoryEvent, append_event_v2},
-    forge::{ForgeAdapter, GiteaForge, MemoryForge},
+    forge::{ForgeAdapter, GiteaForge},
     loader::{apply_event, load_project_state_v2},
     project::ProjectState,
     review::{handle_pr_merge, handle_pr_poll},
@@ -299,15 +299,17 @@ impl CfkServer {
     /// Load existing project state (if any) and return a ready server.
     ///
     /// Uses `GiteaForge` when `GITEA_URL`/`GITEA_TOKEN`/`GITEA_OWNER`/`GITEA_REPO`
-    /// are set; otherwise falls back to an in-memory forge (for local dev/testing).
+    /// are set. Fails fast if none are configured — `MemoryForge` is test-only
+    /// and must never run in production (it silently swallows PR operations).
     ///
     /// # Errors
-    /// Returns an error if the event log cannot be read.
+    /// Returns an error if no forge is configured or the event log cannot be read.
     pub async fn load(project_root: PathBuf) -> anyhow::Result<Self> {
-        let forge: Arc<dyn ForgeAdapter> = match GiteaForge::from_env() {
-            Ok(f) => f,
-            Err(_) => MemoryForge::new(),
-        };
+        let forge: Arc<dyn ForgeAdapter> = GiteaForge::from_env()
+            .map_err(|e| anyhow::anyhow!(
+                "no forge configured ({e}); set GITEA_URL, GITEA_TOKEN, GITEA_OWNER, \
+                 and GITEA_REPO to connect to a Forgejo/Gitea instance"
+            ))?;
         // Bind leases to the Claude Code session id (what the guardrail checks).
         let session_identity = std::env::var("CLAUDE_CODE_SESSION_ID")
             .ok()
