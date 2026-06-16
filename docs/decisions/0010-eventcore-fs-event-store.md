@@ -1,7 +1,7 @@
 # Adopt eventcore 0.9 with the eventcore-fs (jsonl) adapter as cfk's event store
 
 **Date:** 2026-06-13
-**Status:** Proposed
+**Status:** Accepted (2026-06-16; implemented — eventcore-fs is cfk's event store, see `load_project_state_v2`)
 **Supersedes:** ADR 0008 in full (the M1 store-selection decision; on acceptance, 0008's `Status` field is changed to "Superseded by 0010" and nothing else in 0008 is touched, per the ADR-immutability rule)
 **Amends:** ADR 0009 (the stdio transport decision stands unchanged; only the concurrency rationale in 0009's Decision section is replaced — see below)
 

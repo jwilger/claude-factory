@@ -13,7 +13,9 @@
 
 input=$(cat)
 
-cfk="${CLAUDE_PLUGIN_ROOT}/bin/cfk"
+# Prefer the build-on-demand cache (bootstrap-cfk.sh); fall back to a prebuilt.
+cfk="${CLAUDE_PLUGIN_ROOT}/.bin/cfk"
+[ -x "$cfk" ] || cfk="${CLAUDE_PLUGIN_ROOT}/bin/cfk"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
 
 [ -x "$cfk" ] || exit 0

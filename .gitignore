@@ -9,8 +9,10 @@ result-*
 target/
 kernel/target/
 
-# cfk bootstrap cache (binary + hash)
+# cfk bootstrap cache (binary + hash), built on demand by bootstrap-cfk.sh
 plugins/claude-factory/.bin/
+# prebuilt distribution binary (not tracked; produced by release packaging)
+plugins/claude-factory/bin/cfk
 
 # emc operational state (lives outside repo per emc design — keep this a reminder)
 # $XDG_STATE_HOME/emc/ — not tracked here

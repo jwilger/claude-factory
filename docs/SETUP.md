@@ -192,6 +192,37 @@ The bootstrap-emc.sh script will warn clearly about missing dependencies.
 
 ---
 
+## Developing the kernel (build-on-demand dev loop)
+
+The plugin's MCP server is launched by `plugins/claude-factory/scripts/bootstrap-cfk.sh`.
+In this dev repo (where the `kernel/` sources are present) the bootstrap **builds `cfk` on
+demand** — there is no manual `cargo build` → copy → commit → re-cache dance:
+
+- On launch it hashes the kernel sources (`*.rs`, `Cargo.toml`, `Cargo.lock`). If the hash
+  matches the last build, it reuses the cached binary at `plugins/claude-factory/.bin/cfk`
+  (instant). If the sources changed, it rebuilds, caches, and records the new hash.
+- It builds via `cargo` if on `PATH`, otherwise via `nix develop` automatically.
+- The `.bin/` cache is **gitignored**; the binary is no longer committed to the repo.
+
+**The loop:** edit the kernel → restart the claude-factory MCP server (restarting the Claude
+Code session reloads the plugin) → the next launch rebuilds automatically. The first build of
+a changed tree takes ~30s–a few minutes; launches with an unchanged tree are instant.
+
+```bash
+# Force a rebuild on next launch (e.g. after a dependency change cargo can't detect):
+rm -f plugins/claude-factory/.bin/.kernel_src_hash
+
+# Build/refresh the cache manually (optional — bootstrap does this for you):
+bash plugins/claude-factory/scripts/bootstrap-cfk.sh </dev/null   # builds, then exits when no MCP peer
+```
+
+> The kernel-edit guardrail and statusline resolve the same binary (`.bin/cfk`, falling back
+> to a prebuilt `bin/cfk`). When building the kernel directly (outside the factory loop), set
+> `.claude-factory/LEASE_BYPASS` so edits to `kernel/**/src/**` aren't blocked by the lease
+> guardrail.
+
+---
+
 ## Product projects
 
 Product repos that use Claude-Factory need the same toolchain as this repo, plus whatever their product stack requires. Recommended approach:
@@ -199,4 +230,7 @@ Product repos that use Claude-Factory need the same toolchain as this repo, plus
 1. Copy or symlink this repo's `flake.nix` and `rust-toolchain.toml` into the product repo, extending with product-specific packages
 2. Or follow the manual setup above and document any additional product-stack deps
 
-Product projects do **not** need to build `cfk` — the claude-factory plugin's bootstrap-cfk.sh handles that automatically.
+Product projects that install the plugin **alongside the kernel sources** (e.g. this repo as a
+local marketplace) get the build-on-demand loop described above. A standalone consumer install
+without the `kernel/` tree needs a prebuilt `cfk` at `plugins/claude-factory/bin/cfk`; shipping
+per-platform prebuilt binaries is a packaging task tracked for a later milestone (M8).

@@ -14,7 +14,9 @@
 
 input=$(cat)
 
-cfk="${CLAUDE_PLUGIN_ROOT}/bin/cfk"
+# Prefer the build-on-demand cache (bootstrap-cfk.sh); fall back to a prebuilt.
+cfk="${CLAUDE_PLUGIN_ROOT}/.bin/cfk"
+[ -x "$cfk" ] || cfk="${CLAUDE_PLUGIN_ROOT}/bin/cfk"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
 
 # Extract tool_input.file_path and session_id, one per line (handles spaces).
