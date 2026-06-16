@@ -269,7 +269,7 @@ fn split_remote_url(raw: &str) -> Option<(String, String, String)> {
 
     // SCP-style: [user@]host:owner/repo[.git]  (no "://" present)
     if !raw.contains("://") {
-        let rest = if let Some(at) = raw.find('@') { &raw[at + 1..] } else { raw };
+        let rest = raw.find('@').map_or(raw, |at| &raw[at + 1..]);
         let colon = rest.find(':')?;
         let host = &rest[..colon];
         let path = rest[colon + 1..].trim_end_matches(".git");
@@ -285,17 +285,14 @@ fn split_remote_url(raw: &str) -> Option<(String, String, String)> {
     let after_scheme = raw.find("://")?;
     let authority_and_path = &raw[after_scheme + 3..];
     // Strip optional user@
-    let authority_and_path = if let Some(at) = authority_and_path.find('@') {
-        &authority_and_path[at + 1..]
-    } else {
-        authority_and_path
-    };
+    let authority_and_path =
+        authority_and_path.find('@').map_or(authority_and_path, |at| &authority_and_path[at + 1..]);
     // Split host[:port] from /owner/repo path on the first '/'
     let slash = authority_and_path.find('/')?;
     let host_part = &authority_and_path[..slash]; // may be "host:port"
     let path = authority_and_path[slash + 1..].trim_end_matches(".git");
     // Drop optional port from host
-    let host = if let Some(colon) = host_part.find(':') { &host_part[..colon] } else { host_part };
+    let host = host_part.find(':').map_or(host_part, |colon| &host_part[..colon]);
     let owner_slash = path.find('/')?;
     Some((
         format!("https://{host}"),

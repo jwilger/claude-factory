@@ -345,13 +345,7 @@ pub async fn stream_event_count(store: &FileEventStore) -> Result<usize, EventSt
 pub async fn load_events_from_store(
     store: &FileEventStore,
 ) -> Result<Vec<FactoryEvent>, EventStoreError> {
-    let page = EventPage::first(
-        #[expect(
-            clippy::expect_used,
-            reason = "65536 is a hard-coded non-zero literal; the only failure mode is zero, which this is not"
-        )]
-        BatchSize::new(65_536),
-    );
+    let page = EventPage::first(BatchSize::new(65_536));
     let pairs: Vec<(FactoryEvent, _)> = store
         .read_events::<FactoryEvent>(EventFilter::all(), page)
         .await

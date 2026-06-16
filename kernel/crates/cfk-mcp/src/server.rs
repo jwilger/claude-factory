@@ -387,7 +387,10 @@ fn work_item_summary(item: &WorkItem) -> WorkItemSummary {
     }
 }
 
-fn content_json<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
+fn content_json<T>(value: &T) -> Result<CallToolResult, McpError>
+where
+    T: Serialize,
+{
     let content = Content::json(value)?;
     Ok(CallToolResult::success(vec![content]))
 }

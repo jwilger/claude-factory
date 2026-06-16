@@ -229,7 +229,7 @@ pub fn design_step_action(
             let executor = resolve(routing, WorkType::DesignSystemBuild)?.clone();
             let inventory_lines: Vec<_> = design_inventory
                 .iter()
-                .map(|c| format!("- {} ({:?})", &c.name, c.kind))
+                .map(|c| format!("- {} ({:?})", c.name, c.kind))
                 .collect();
             let inventory_summary = if inventory_lines.is_empty() {
                 "None yet.".to_string()

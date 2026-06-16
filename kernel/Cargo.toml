@@ -67,6 +67,9 @@ implicit_return = "allow"
 question_mark_used = "allow"
 # We use flat file naming (state_machine.rs, not state_machine/mod.rs)
 self_named_module_files = "allow"
+# Inline modules are idiomatic here: `pub mod well_known` constant groups and
+# `#[cfg(test)] mod tests` blocks live alongside the code they support
+inline_modules = "allow"
 # Re-exports (`pub use`) are standard Rust API design
 pub_use = "allow"
 # `impl Trait` in params is idiomatic for simple public functions
@@ -102,6 +105,8 @@ as_conversions = "allow"
 arbitrary_source_item_ordering = "allow"
 # Anonymous trait imports are acceptable
 unused_trait_names = "allow"
+# rmcp's #[tool_handler] macro generates an async trait impl with no .await
+unused_async_trait_impl = "allow"
 # Absolute paths in code body: we use `use` statements at module top instead
 absolute_paths = "allow"
 # Cloning Arc/Rc is intentional and explicit; the type communicates shared ownership

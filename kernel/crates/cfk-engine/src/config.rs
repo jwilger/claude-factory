@@ -64,7 +64,7 @@ pub fn default_routing_table() -> RoutingTable {
             },
             RoutingEntry {
                 work_type: WorkType::TestReview,
-                executor: codex("o4-mini", CodexEffort::High),
+                executor: codex("gpt-5.5", CodexEffort::High),
                 notes: Some("Cross-family review: GPT catches different blind spots than Claude.".into()),
             },
             RoutingEntry {
@@ -74,7 +74,7 @@ pub fn default_routing_table() -> RoutingTable {
             },
             RoutingEntry {
                 work_type: WorkType::ImplementationReview,
-                executor: codex("o4-mini", CodexEffort::High),
+                executor: codex("gpt-5.5", CodexEffort::High),
                 notes: Some("Cross-family review.".into()),
             },
             RoutingEntry {
@@ -93,5 +93,32 @@ pub fn default_routing_table() -> RoutingTable {
                 notes: None,
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_routing_table;
+    use cfk_core::types::routing::{CodexModel, ExecutorSpec};
+
+    /// The Codex CLI rejects the model `o4-mini` under a ChatGPT account, so the
+    /// default routing table must never specify it for any work type. Review work
+    /// types use `gpt-5.5` instead.
+    #[test]
+    #[expect(clippy::expect_used, reason = "test constructs a known-valid identifier")]
+    fn default_routing_never_uses_o4_mini() {
+        let table = default_routing_table();
+        let o4_mini =
+            CodexModel::try_new("o4-mini".to_string()).expect("valid CodexModel identifier");
+
+        for entry in &table.entries {
+            if let ExecutorSpec::Codex { model, .. } = &entry.executor {
+                assert_ne!(
+                    model, &o4_mini,
+                    "work type {:?} routes to the unsupported Codex model o4-mini",
+                    entry.work_type
+                );
+            }
+        }
     }
 }
