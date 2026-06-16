@@ -25,7 +25,7 @@ use cfk_engine::{
     checks::load_checks,
     commands::{CommandError, SubmissionOutcome, SubmissionPayload, handle_claim, handle_metrics, handle_next_step, handle_record_outcome, handle_submission, normalize_submission_result, validate_gate_verdict},
     config::default_routing_table,
-    emc::read_verified_slices,
+    emc::{read_verified_slices, EmcSlice},
     events::{FactoryEvent, append_event_v2},
     forge::{ForgeAdapter, GiteaForge},
     loader::{apply_event, load_project_state_v2},
@@ -399,6 +399,38 @@ fn work_item_summary(item: &WorkItem) -> WorkItemSummary {
     }
 }
 
+/// Compute the per-slice promotion chain heads to spawn for the current state
+/// (ADR 0011). Pure given the project and the verified slices; the caller emits
+/// the returned `WorkItemAdded` events. Shared by `cf_next_step` reconciliation
+/// and the manual `cf_ingest_slices` backfill so both seed the chain identically
+/// (a slug already in the chain yields nothing, never a phase-skipping item).
+fn compute_slice_promotions(proj: &ProjectState, slices: &[EmcSlice]) -> Vec<WorkItem> {
+    slices
+        .iter()
+        .filter_map(|slice| {
+            let existing: Vec<(PhaseKind, WorkItemStatus)> = proj
+                .work_items
+                .iter()
+                .filter(|i| i.emc_slug.as_deref() == Some(slice.slug.as_str()))
+                .map(|i| (i.phase, i.status))
+                .collect();
+            let dev_work_type = match slice.kind.as_str() {
+                "translation" | "mechanical" => WorkType::MechanicalTransform,
+                _ => WorkType::NarrowestStepImplementation,
+            };
+            next_slice_promotion(&existing, dev_work_type).map(|head| {
+                WorkItem::from_emc_slice(
+                    WorkItemId::new(),
+                    head.phase,
+                    head.work_type,
+                    format!("[{}] {}", slice.slug, slice.name),
+                    slice.slug.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
 fn content_json<T>(value: &T) -> Result<CallToolResult, McpError>
 where
     T: Serialize,
@@ -549,29 +581,7 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
                 let root = guard.project_root.clone();
                 let slices = read_verified_slices(&root)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                let mut spawn = Vec::new();
-                for slice in &slices {
-                    let existing: Vec<(PhaseKind, WorkItemStatus)> = proj
-                        .work_items
-                        .iter()
-                        .filter(|i| i.emc_slug.as_deref() == Some(slice.slug.as_str()))
-                        .map(|i| (i.phase, i.status))
-                        .collect();
-                    let dev_work_type = match slice.kind.as_str() {
-                        "translation" | "mechanical" => WorkType::MechanicalTransform,
-                        _ => WorkType::NarrowestStepImplementation,
-                    };
-                    if let Some(head) = next_slice_promotion(&existing, dev_work_type) {
-                        spawn.push(WorkItem::from_emc_slice(
-                            WorkItemId::new(),
-                            head.phase,
-                            head.work_type,
-                            format!("[{}] {}", slice.slug, slice.name),
-                            slice.slug.clone(),
-                        ));
-                    }
-                }
-                spawn
+                compute_slice_promotions(proj, &slices)
             } else {
                 Vec::new()
             };
@@ -1144,11 +1154,14 @@ Add a work item to the backlog. \
     }
 
     #[tool(description = "\
-Ingest slices from a formally-verified emc model into the development backlog. \
-Reads `model/events/v1/` under the product repo, finds all `SliceAdded` events \
-whose workflow has a `WorkflowReadinessDeclared` event, and creates a development \
-work item for each new slice (idempotent — already-ingested slugs are skipped). \
-Returns counts of ingested and skipped slices.")]
+Manually reconcile the per-slice promotion chain (ADR 0011) from a formally-\
+verified emc model — a backlog/backfill convenience; `cf_next_step` performs the \
+same reconciliation automatically. Reads `model/events/v1/` under the product \
+repo, finds all `SliceAdded` events whose workflow has a \
+`WorkflowReadinessDeclared` event, and for each slice spawns the SINGLE next \
+chain-head work item it needs (a new slice → an ArchitectureTriage gate; never a \
+phase-skipping Development item). Idempotent: slices already as far along as their \
+items allow yield nothing. Returns counts of spawned and unchanged slices.")]
     pub async fn cf_ingest_slices(
         &self,
         Parameters(params): Parameters<IngestSlicesParams>,
@@ -1164,51 +1177,23 @@ Returns counts of ingested and skipped slices.")]
 
         let slices = read_verified_slices(&root)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let total_slices = slices.len();
 
-        // Collect already-ingested slugs to avoid duplicates.
-        let existing_slugs: std::collections::HashSet<String> = proj
-            .work_items
-            .iter()
-            .filter_map(|i| i.emc_slug.clone())
-            .collect();
+        let to_spawn = compute_slice_promotions(proj, &slices);
+        let spawned = to_spawn.len();
+        let mut new_ids: Vec<String> = Vec::with_capacity(spawned);
 
-        let mut ingested = 0usize;
-        let mut skipped = 0usize;
-        let mut new_ids: Vec<String> = Vec::new();
-
-        for slice in slices {
-            if existing_slugs.contains(&slice.slug) {
-                skipped += 1;
-                continue;
-            }
-
-            let work_type = match slice.kind.as_str() {
-                "translation" | "mechanical" => WorkType::MechanicalTransform,
-                _ => WorkType::NarrowestStepImplementation,
-            };
-
-            let item = WorkItem::from_emc_slice(
-                cfk_core::types::ids::WorkItemId::new(),
-                PhaseKind::Development,
-                work_type,
-                format!("[{}] {}", slice.slug, slice.name),
-                slice.slug.clone(),
-            );
-
-            let id_str = item.id.to_string();
-
+        for item in to_spawn {
+            new_ids.push(item.id.to_string());
             guard
                 .emit(FactoryEvent::WorkItemAdded { work_item: item })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            new_ids.push(id_str);
-            ingested += 1;
         }
 
         content_json(&serde_json::json!({
-            "ingested": ingested,
-            "skipped": skipped,
+            "spawned": spawned,
+            "unchanged": total_slices.saturating_sub(spawned),
             "work_item_ids": new_ids,
         }))
     }

@@ -16,7 +16,7 @@ use std::path::Path;
 use cfk_core::types::phase::PhaseKind;
 use cfk_engine::forge::MemoryForge;
 use cfk_mcp::server::{
-    CfkServer, InitParams, NextStepParams, PhaseFilterParams, TriageSubmitParams,
+    CfkServer, IngestSlicesParams, InitParams, NextStepParams, PhaseFilterParams, TriageSubmitParams,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, RawContent};
@@ -251,6 +251,36 @@ async fn architecture_triage_needing_adr_spawns_drafting_and_holds_chain() {
         backlog(&server, PhaseKind::DesignSystem).await.is_empty(),
         "chain must not advance to design while the ADR is still pending"
     );
+}
+
+#[tokio::test]
+async fn cf_ingest_slices_seeds_triage_not_development() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+    write_verified_model(
+        dir.path(),
+        "checkout",
+        &[("add-to-cart", "Add to cart", "command"), ("view-cart", "View cart", "state_view")],
+    );
+
+    // Manual backfill must seed the chain at Architecture triage, never jump to
+    // Development (which would poison the chain — reconciliation would then never
+    // spawn the slice's triage gates).
+    let result = server
+        .cf_ingest_slices(Parameters(IngestSlicesParams { project_root: None }))
+        .await
+        .expect("cf_ingest_slices");
+    assert_eq!(result_json(&result)["spawned"], 2);
+
+    let arch = backlog(&server, PhaseKind::Architecture).await;
+    assert_eq!(arch.len(), 2);
+    assert!(arch.iter().all(|i| i["work_type"] == "ArchitectureTriage"));
+    assert!(backlog(&server, PhaseKind::Development).await.is_empty());
+
+    // Consistent with cf_next_step reconciliation: it must not double-spawn.
+    next_step(&server).await;
+    assert_eq!(backlog(&server, PhaseKind::Architecture).await.len(), 2);
 }
 
 #[tokio::test]
