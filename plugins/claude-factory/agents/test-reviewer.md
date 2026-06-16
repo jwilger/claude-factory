@@ -40,6 +40,8 @@ For the test you are reviewing, check each item. Any failure is grounds for a ve
 **7. Primary success scenario & contract coverage**
 - If the test writer marked this the primary success scenario, does it assert **every value the success-path return type promises** (each field/component a caller reads)? A success test that ignores part of the return contract lets the implementer ship an unobservable field — veto.
 - If this is the FIRST test for a slice and it covers only an error/edge case (not the happy path), veto: under narrowest-change TDD the success path would never get built. The happy path must be tested first.
+- **Sound assertions only.** Veto a success assertion that compares value objects by **structural deep-equality** (`assert.deepEqual`, `==`/`equals` on whole objects with private state) — it can pass without comparing the values. Each promised value must be asserted through an accessor / explicit equality / unwrapped primitive.
+- **Semantic-type assertions.** If the production return type exposes a value as a semantic type, the test must assert it as that semantic type (constructed via its parser), not against a raw primitive. An assertion like `field == 10` against a raw int signals — and forces — a raw-primitive field; veto and require the semantic type.
 
 ## Output format
 

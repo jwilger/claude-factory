@@ -78,7 +78,9 @@ pub fn tdd_impl_review(description: &str) -> StepPrompt {
          - Functional core / imperative shell: business logic pure, I/O only at the boundary.\n\
          - Semantic types throughout — including struct fields and error payloads. Their\n\
          constructors must enforce invariants and return Result (parse, don't validate);\n\
-         veto unchecked casts or pass-through constructors that admit illegal values.\n\
+         veto unchecked casts or pass-through constructors that admit illegal values, AND\n\
+         veto if the type's default/structural constructor (dataclass __init__, exported\n\
+         class constructor, pub tuple struct) or a conversion method bypasses the parser.\n\
          - Railway-oriented errors: fallible ops return Result; no unwrap/expect/panic in\n\
          product code.\n\
          - Observable contract: every field/variant/return value of a public type is\n\
