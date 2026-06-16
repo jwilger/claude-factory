@@ -19,6 +19,8 @@ pub enum ForgeConfigError {
     MissingEnvVar { var: &'static str },
     #[error("failed to build HTTP client: {0}")]
     Client(#[from] reqwest::Error),
+    #[error("could not derive forge config from git remote: {reason}")]
+    GitRemote { reason: String },
 }
 
 /// Error type for forge adapter operations.
@@ -202,19 +204,33 @@ pub struct GiteaForge {
 }
 
 impl GiteaForge {
-    /// Build from environment variables. Returns an error if any are missing.
+    /// Build from environment variables, falling back to the git remote for
+    /// non-secret values (`GITEA_URL`, `GITEA_OWNER`, `GITEA_REPO`).
+    ///
+    /// Only `GITEA_TOKEN` is always required from the environment — the host,
+    /// owner, and repo can be inferred from `git remote get-url origin`.
     ///
     /// # Errors
-    /// Returns an error if any required environment variable is absent.
+    /// Returns an error if the token is absent or the remote cannot be parsed.
     pub fn from_env() -> Result<Arc<Self>, ForgeConfigError> {
-        let base_url = std::env::var("GITEA_URL")
-            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_URL" })?;
         let token = std::env::var("GITEA_TOKEN")
             .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_TOKEN" })?;
-        let owner = std::env::var("GITEA_OWNER")
-            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_OWNER" })?;
-        let repo = std::env::var("GITEA_REPO")
-            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_REPO" })?;
+
+        let (base_url, owner, repo) = match (
+            std::env::var("GITEA_URL").ok(),
+            std::env::var("GITEA_OWNER").ok(),
+            std::env::var("GITEA_REPO").ok(),
+        ) {
+            (Some(u), Some(o), Some(r)) => (u, o, r),
+            (url_opt, owner_opt, repo_opt) => {
+                let (git_url, git_owner, git_repo) = parse_git_remote()?;
+                (
+                    url_opt.unwrap_or(git_url),
+                    owner_opt.unwrap_or(git_owner),
+                    repo_opt.unwrap_or(git_repo),
+                )
+            }
+        };
 
         let client = reqwest::Client::builder()
             .user_agent("cfk/1.0")
@@ -222,6 +238,73 @@ impl GiteaForge {
 
         Ok(Arc::new(Self { client, base_url, token, owner, repo }))
     }
+}
+
+/// Parse `git remote get-url origin` into `(base_url, owner, repo)`.
+///
+/// Handles three URL forms:
+/// - `ssh://[user@]host[:port]/owner/repo[.git]`
+/// - `git@host:owner/repo[.git]` (SCP-style)
+/// - `https://host/owner/repo[.git]`
+fn parse_git_remote() -> Result<(String, String, String), ForgeConfigError> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map_err(|e| ForgeConfigError::GitRemote { reason: format!("git not found: {e}") })?;
+
+    if !output.status.success() {
+        return Err(ForgeConfigError::GitRemote {
+            reason: "git remote get-url origin failed — no 'origin' remote configured".to_string(),
+        });
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    split_remote_url(&raw).ok_or_else(|| ForgeConfigError::GitRemote {
+        reason: format!("cannot parse remote URL {raw:?} into host/owner/repo"),
+    })
+}
+
+fn split_remote_url(raw: &str) -> Option<(String, String, String)> {
+    let raw = raw.trim();
+
+    // SCP-style: [user@]host:owner/repo[.git]  (no "://" present)
+    if !raw.contains("://") {
+        let rest = if let Some(at) = raw.find('@') { &raw[at + 1..] } else { raw };
+        let colon = rest.find(':')?;
+        let host = &rest[..colon];
+        let path = rest[colon + 1..].trim_end_matches(".git");
+        let slash = path.find('/')?;
+        return Some((
+            format!("https://{host}"),
+            path[..slash].to_string(),
+            path[slash + 1..].to_string(),
+        ));
+    }
+
+    // Scheme-based: ssh:// or https://
+    let after_scheme = raw.find("://")?;
+    let authority_and_path = &raw[after_scheme + 3..];
+    // Strip optional user@
+    let authority_and_path = if let Some(at) = authority_and_path.find('@') {
+        &authority_and_path[at + 1..]
+    } else {
+        authority_and_path
+    };
+    // Split host[:port] from /owner/repo path on the first '/'
+    let slash = authority_and_path.find('/')?;
+    let host_part = &authority_and_path[..slash]; // may be "host:port"
+    let path = authority_and_path[slash + 1..].trim_end_matches(".git");
+    // Drop optional port from host
+    let host = if let Some(colon) = host_part.find(':') { &host_part[..colon] } else { host_part };
+    let owner_slash = path.find('/')?;
+    Some((
+        format!("https://{host}"),
+        path[..owner_slash].to_string(),
+        path[owner_slash + 1..].to_string(),
+    ))
+}
+
+impl GiteaForge {
 
     fn api_url(&self, path: &str) -> String {
         format!("{}/api/v1/repos/{}/{}{}", self.base_url, self.owner, self.repo, path)
@@ -354,5 +437,41 @@ impl ForgeAdapter for GiteaForge {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_remote_url;
+
+    #[test]
+    fn parses_ssh_with_port() {
+        let (url, owner, repo) = split_remote_url(
+            "ssh://forgejo@git.example.com:2222/Acme/my-repo.git"
+        ).unwrap();
+        assert_eq!(url, "https://git.example.com");
+        assert_eq!(owner, "Acme");
+        assert_eq!(repo, "my-repo");
+    }
+
+    #[test]
+    fn parses_scp_style() {
+        let (url, owner, repo) = split_remote_url("git@github.com:user/repo.git").unwrap();
+        assert_eq!(url, "https://github.com");
+        assert_eq!(owner, "user");
+        assert_eq!(repo, "repo");
+    }
+
+    #[test]
+    fn parses_https() {
+        let (url, owner, repo) = split_remote_url("https://github.com/user/repo.git").unwrap();
+        assert_eq!(url, "https://github.com");
+        assert_eq!(owner, "user");
+        assert_eq!(repo, "repo");
+    }
+
+    #[test]
+    fn returns_none_for_garbage() {
+        assert!(split_remote_url("not-a-url").is_none());
     }
 }
