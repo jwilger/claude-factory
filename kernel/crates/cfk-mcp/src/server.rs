@@ -1,6 +1,7 @@
 //! MCP server implementation — exposes `cf_*` tools over stdio.
 
 use cfk_core::{
+    promotion::next_slice_promotion,
     state_machine::{
         architecture::AdrPhase,
         discovery::DiscoveryPhase,
@@ -527,6 +528,50 @@ items, the step is TDD-phase-specific. The response `status` is `ready` or \
         Parameters(params): Parameters<NextStepParams>,
     ) -> Result<CallToolResult, McpError> {
         let mut guard = self.state.write().await;
+
+        // ── Per-slice promotion reconciliation (ADR 0011) ──────────────────────
+        // Each verified emc slice flows Architecture → DesignSystem → Development.
+        // Spawn the next chain-head for any slice that needs one. Pure decision in
+        // cfk_core::promotion; this shell reads the verified model and emits.
+        {
+            let to_spawn: Vec<WorkItem> = if let Some(ref proj) = guard.project {
+                let root = guard.project_root.clone();
+                let slices = read_verified_slices(&root)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let mut spawn = Vec::new();
+                for slice in &slices {
+                    let existing: Vec<(PhaseKind, WorkItemStatus)> = proj
+                        .work_items
+                        .iter()
+                        .filter(|i| i.emc_slug.as_deref() == Some(slice.slug.as_str()))
+                        .map(|i| (i.phase, i.status))
+                        .collect();
+                    let dev_work_type = match slice.kind.as_str() {
+                        "translation" | "mechanical" => WorkType::MechanicalTransform,
+                        _ => WorkType::NarrowestStepImplementation,
+                    };
+                    if let Some(head) = next_slice_promotion(&existing, dev_work_type) {
+                        spawn.push(WorkItem::from_emc_slice(
+                            WorkItemId::new(),
+                            head.phase,
+                            head.work_type,
+                            format!("[{}] {}", slice.slug, slice.name),
+                            slice.slug.clone(),
+                        ));
+                    }
+                }
+                spawn
+            } else {
+                Vec::new()
+            };
+            for item in to_spawn {
+                guard
+                    .emit(FactoryEvent::WorkItemAdded { work_item: item })
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            }
+        }
+
         let Some(ref proj) = guard.project else {
             return Ok(tool_error("Project not initialized. Run `cf_init` first."));
         };
