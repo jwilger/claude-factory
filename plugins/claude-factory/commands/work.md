@@ -1,6 +1,6 @@
 ---
 description: Run the factory conductor loop — dispatches the next ready work item across all phases. Runs continuously until idle or a human decision is needed.
-allowed-tools: Agent, Workflow, Bash, Read, mcp__claude-factory__cf_next_step, mcp__claude-factory__cf_submit, mcp__claude-factory__cf_status, mcp__claude-factory__cf_gate, mcp__claude-factory__cf_escalate, mcp__claude-factory__cf_decide, mcp__claude-factory__cf_run_check, mcp__claude-factory__cf_claim, mcp__claude-factory__cf_release, mcp__claude-factory__cf_discovery_submit, mcp__claude-factory__cf_discovery_approve, mcp__claude-factory__cf_adr_submit, mcp__claude-factory__cf_design_add_component, mcp__claude-factory__cf_design_cross_check, mcp__claude-factory__cf_pr_open, mcp__claude-factory__cf_pr_poll, mcp__claude-factory__cf_pr_merge, mcp__claude-factory__cf_record_outcome, mcp__claude-factory__cf_metrics
+allowed-tools: Agent, Workflow, Bash, Read, mcp__claude-factory__cf_next_step, mcp__claude-factory__cf_submit, mcp__claude-factory__cf_status, mcp__claude-factory__cf_gate, mcp__claude-factory__cf_escalate, mcp__claude-factory__cf_decide, mcp__claude-factory__cf_run_check, mcp__claude-factory__cf_claim, mcp__claude-factory__cf_release, mcp__claude-factory__cf_discovery_submit, mcp__claude-factory__cf_discovery_approve, mcp__claude-factory__cf_adr_submit, mcp__claude-factory__cf_triage_submit, mcp__claude-factory__cf_design_add_component, mcp__claude-factory__cf_design_cross_check, mcp__claude-factory__cf_pr_open, mcp__claude-factory__cf_pr_poll, mcp__claude-factory__cf_pr_merge, mcp__claude-factory__cf_record_outcome, mcp__claude-factory__cf_metrics, AskUserQuestion
 argument-hint: "[--phase <phase>] [--once]"
 ---
 
@@ -30,15 +30,18 @@ Arguments: $ARGUMENTS
 
 After a `spawn_agent` step completes, submit results via the appropriate tool:
 
-| Phase | Submission tool | Notes |
+The step's `prompt` always names the tool to call — follow it. Summary:
+
+| Phase / step | Submission tool | Notes |
 |---|---|---|
 | Discovery — Dialogue | `cf_discovery_submit` | Submits the product brief JSON |
 | Discovery — BriefReady (human gate) | `cf_discovery_approve` | Conductor presents brief to user, submits approval |
-| Architecture | `cf_adr_submit` | Submits the ADR content |
+| Architecture — triage | `cf_triage_submit` | `needs_followup` true iff an ADR is required (see Autonomy) |
+| Architecture — ADR draft | `cf_adr_submit` | Submits the ADR content |
+| Design system — triage | `cf_triage_submit` | `needs_followup` true iff components must be built |
 | Design system — building | `cf_design_add_component` | Submits one component; loop until no more steps |
-| Design system — cross-check | `cf_design_cross_check` | Submits cross-check confirmation |
 | Development (TDD) | `cf_submit` | Generic submission for test/impl results |
-| Review | `cf_submit` | Generic submission for review results |
+| Review | `cf_submit` | Generic submission for PR-comment triage results |
 
 ## Agent dispatching
 
@@ -48,15 +51,26 @@ When spawning an agent, the routing spec from `cf_next_step` specifies:
 
 Always pass the kernel's prompt verbatim — do not embellish or compress it.
 
-## Autonomous operation
+## Where the operator is in the loop
 
-Run without stopping to ask questions. Make tactical decisions:
+The kernel decides *what* runs; this policy decides *whether to involve the operator* after a `spawn_agent` step, keyed on the step's `phase`:
+
+- **Discovery, Architecture, Design system → interactive.** These are human-decision phases. Run the agent to produce its analysis/recommendation, then present it to the operator with `AskUserQuestion` and submit the operator's decision. For a **triage** step, the agent recommends `needs_followup`; the operator confirms, and you pass their choice to `cf_triage_submit`. Never let an agent's recommendation auto-commit a decision in these phases.
+- **Event modeling → lightly interactive.** Follow the operator's lead; surface consequential modeling choices, otherwise proceed.
+- **Development → fully autonomous.** Run red-green-refactor without pausing.
+- **Review → autonomous**, except the **PR review gate** (`gate_review` on the PR and final merge approval), which is a human decision.
+
+The contract: a feature flows discovery → modeled → architecture/design (interactive gates) → built autonomously → merged after the PR review gate, touching the operator only at those planned points.
+
+## Autonomous tactical decisions (do NOT ask the operator)
+
+Within autonomous phases, make tactical calls yourself — these are not the planned human points above:
 
 - **Missing executor script** (`scripts/codex-runner.sh` absent): fall back to the equivalent Claude agent for that gate kind and continue.
 - **Dependency gap**: if a test requires a public API that does not yet exist, add the missing work item to the backlog and veto the test with a clear reason, then continue the loop.
 - **TDD discipline**: write ONE failing test per `spawn_agent` step (Kent Beck: simplest test that pins the core contract).
 
-Only stop when the kernel returns `idle`, when the kernel issues an `ask_human` action, or when there is a genuine blocker with no path forward (missing credentials, irreversible destructive action). Do **not** use `AskUserQuestion` for tactical decisions.
+Stop the loop only when the kernel returns `idle`, or on a genuine blocker with no path forward (missing credentials, irreversible destructive action). `ask_human` actions and the interactive phases above are handled in-loop via `AskUserQuestion`/`cf_decide` — they pause for input but do not stop the loop.
 
 ## Error handling
 
