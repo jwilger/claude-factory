@@ -197,6 +197,17 @@ pub struct AdrSubmitParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TriageSubmitParams {
+    /// The `work_item_id` of the triage work item (ArchitectureTriage/DesignTriage).
+    pub work_item_id: String,
+    /// `true` if the slice needs follow-up work — an ADR for architecture triage,
+    /// or design components for design triage. `false` fast-passes the gate.
+    pub needs_followup: bool,
+    /// One-paragraph rationale for the decision (retained in the event log).
+    pub rationale: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DesignAddComponentParams {
     /// The `work_item_id` of the design-system work item.
     pub work_item_id: String,
@@ -1598,6 +1609,100 @@ Returns the assigned ADR ID. After submission the ADR enters review gate.")]
             "work_item_id": params.work_item_id,
             "adr_id": adr_id.to_string(),
             "title": params.title,
+        }))
+    }
+
+    #[tool(description = "\
+Submit a per-slice triage decision (ADR 0011) for an ArchitectureTriage or \
+DesignTriage work item. The triage item is completed. When `needs_followup` is \
+true, a follow-up work item is spawned carrying the same slice slug — an \
+AdrDrafting item for architecture triage, or a DesignSystemBuild item for design \
+triage — so the slice's chain waits for that work before advancing.")]
+    pub async fn cf_triage_submit(
+        &self,
+        Parameters(params): Parameters<TriageSubmitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let work_item_id = parse_work_item_id(&params.work_item_id)?;
+
+        if params.rationale.trim().is_empty() {
+            return Ok(tool_error("rationale must not be empty"));
+        }
+
+        // Validate the item and capture what the follow-up needs, releasing the
+        // read borrow before emitting.
+        let followup: Option<WorkItem> = {
+            let guard = self.state.read().await;
+            let proj = guard.project.as_ref().ok_or_else(|| {
+                McpError::invalid_params("Project not initialized.", None)
+            })?;
+            let Some(item) = proj.work_items.iter().find(|i| i.id == work_item_id) else {
+                return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
+            };
+            if item.status == WorkItemStatus::Done {
+                return Ok(tool_error(format!(
+                    "work item {} is already Done",
+                    params.work_item_id
+                )));
+            }
+            let (followup_phase, followup_type) = match item.work_type {
+                WorkType::ArchitectureTriage => (PhaseKind::Architecture, WorkType::AdrDrafting),
+                WorkType::DesignTriage => (PhaseKind::DesignSystem, WorkType::DesignSystemBuild),
+                other => {
+                    return Ok(tool_error(format!(
+                        "work item {} is not a triage item (work_type {other:?})",
+                        params.work_item_id
+                    )));
+                }
+            };
+
+            if params.needs_followup {
+                let id = WorkItemId::new();
+                Some(item.emc_slug.clone().map_or_else(
+                    || WorkItem::new(id.clone(), followup_phase, followup_type, item.description.clone()),
+                    |slug| {
+                        WorkItem::from_emc_slice(
+                            id.clone(),
+                            followup_phase,
+                            followup_type,
+                            item.description.clone(),
+                            slug,
+                        )
+                    },
+                ))
+            } else {
+                None
+            }
+        };
+
+        let mut guard = self.state.write().await;
+        guard
+            .emit(FactoryEvent::TriageDecided {
+                work_item_id: work_item_id.clone(),
+                needs_followup: params.needs_followup,
+                rationale: params.rationale.clone(),
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        guard
+            .emit(FactoryEvent::WorkItemCompleted { work_item_id })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let followup_id = if let Some(item) = followup {
+            let id = item.id.to_string();
+            guard
+                .emit(FactoryEvent::WorkItemAdded { work_item: item })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            Some(id)
+        } else {
+            None
+        };
+
+        content_json(&serde_json::json!({
+            "work_item_id": params.work_item_id,
+            "needs_followup": params.needs_followup,
+            "followup_work_item_id": followup_id,
         }))
     }
 

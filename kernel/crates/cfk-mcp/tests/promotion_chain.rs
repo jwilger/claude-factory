@@ -15,7 +15,9 @@ use std::path::Path;
 
 use cfk_core::types::phase::PhaseKind;
 use cfk_engine::forge::MemoryForge;
-use cfk_mcp::server::{CfkServer, InitParams, NextStepParams, PhaseFilterParams};
+use cfk_mcp::server::{
+    CfkServer, InitParams, NextStepParams, PhaseFilterParams, TriageSubmitParams,
+};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, RawContent};
 use tempfile::TempDir;
@@ -108,6 +110,31 @@ async fn backlog(server: &CfkServer, phase: PhaseKind) -> Vec<serde_json::Value>
     result_json(&result)["items"].as_array().cloned().unwrap_or_default()
 }
 
+async fn first_item_id(server: &CfkServer, phase: PhaseKind) -> String {
+    let items = backlog(server, phase).await;
+    items
+        .first()
+        .and_then(|i| i["id"].as_str())
+        .expect("a work item in the phase")
+        .to_string()
+}
+
+async fn triage_submit(server: &CfkServer, work_item_id: &str, needs_followup: bool) {
+    let result = server
+        .cf_triage_submit(Parameters(TriageSubmitParams {
+            work_item_id: work_item_id.to_string(),
+            needs_followup,
+            rationale: "test rationale".to_string(),
+        }))
+        .await
+        .expect("cf_triage_submit");
+    assert!(!result.is_error.unwrap_or(false), "cf_triage_submit: {}", result_text(&result));
+}
+
+fn work_types(items: &[serde_json::Value]) -> Vec<String> {
+    items.iter().filter_map(|i| i["work_type"].as_str().map(String::from)).collect()
+}
+
 // ── Scenarios ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -176,6 +203,54 @@ async fn reconciliation_is_idempotent_across_calls() {
 
     let arch = backlog(&server, PhaseKind::Architecture).await;
     assert_eq!(arch.len(), 1, "repeated cf_next_step must not re-spawn the chain head");
+}
+
+#[tokio::test]
+async fn fast_pass_chain_flows_all_the_way_to_development() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+    write_verified_model(dir.path(), "checkout", &[("add-to-cart", "Add to cart", "command")]);
+
+    next_step(&server).await; // spawn architecture triage
+    let arch_id = first_item_id(&server, PhaseKind::Architecture).await;
+    triage_submit(&server, &arch_id, false).await; // fast-pass architecture
+
+    next_step(&server).await; // spawn design triage
+    let design_id = first_item_id(&server, PhaseKind::DesignSystem).await;
+    triage_submit(&server, &design_id, false).await; // fast-pass design
+
+    next_step(&server).await; // spawn development
+
+    let dev = backlog(&server, PhaseKind::Development).await;
+    assert_eq!(dev.len(), 1, "fast-passing both gates should yield one development item");
+    assert_eq!(dev[0]["work_type"], "NarrowestStepImplementation");
+    assert_eq!(dev[0]["status"], "ready");
+}
+
+#[tokio::test]
+async fn architecture_triage_needing_adr_spawns_drafting_and_holds_chain() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+    write_verified_model(dir.path(), "checkout", &[("add-to-cart", "Add to cart", "command")]);
+
+    next_step(&server).await;
+    let arch_id = first_item_id(&server, PhaseKind::Architecture).await;
+    triage_submit(&server, &arch_id, true).await; // needs an ADR
+
+    next_step(&server).await;
+
+    let arch = backlog(&server, PhaseKind::Architecture).await;
+    let kinds = work_types(&arch);
+    assert!(
+        kinds.contains(&"AdrDrafting".to_string()),
+        "needs-followup architecture triage must spawn an AdrDrafting item; got {kinds:?}"
+    );
+    assert!(
+        backlog(&server, PhaseKind::DesignSystem).await.is_empty(),
+        "chain must not advance to design while the ADR is still pending"
+    );
 }
 
 #[tokio::test]

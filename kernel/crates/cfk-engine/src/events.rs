@@ -167,6 +167,19 @@ pub enum FactoryEvent {
         reason: Option<String>,
     },
 
+    // ── Per-slice triage events (ADR 0011) ──────────────────────────────
+    /// A per-slice triage gate recorded its decision. `needs_followup` is true
+    /// when the slice requires follow-up work (an ADR for architecture triage,
+    /// or design components for design triage); that follow-up item is added via
+    /// a separate `WorkItemAdded` event and the triage item is completed via
+    /// `WorkItemCompleted`. The `rationale` is retained here for audit and
+    /// projects no further state.
+    TriageDecided {
+        work_item_id: WorkItemId,
+        needs_followup: bool,
+        rationale: String,
+    },
+
     // ── Design-system phase events ───────────────────────────────────────
     /// A design component was added to the inventory.
     DesignComponentAdded {
