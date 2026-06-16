@@ -1,54 +1,29 @@
 #!/usr/bin/env bash
-# Rebuild cfk release binary if kernel source changes are staged.
+# Guard the append-only factory event log.
+#
+# The cfk binary is NOT rebuilt or committed here — it is built on demand at
+# MCP-server launch by plugins/claude-factory/scripts/bootstrap-cfk.sh and is
+# gitignored (see ADR 0013). This hook only protects the event store.
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-KERNEL_DIR="${REPO_ROOT}/kernel"
-PLUGIN_BIN="${REPO_ROOT}/plugins/claude-factory/bin/cfk"
-
 # ── Ensure the factory event log is staged ───────────────────────────────────
-# The event store under .claude-factory/events/ is an append-only log that is
-# the source of truth for project state. New or modified event files left
-# unstaged would silently desync the committed history from the running state,
-# so refuse to commit while any exist outside the index.
+# The event store under .claude-factory/eventstore/events/ (eventcore-fs, ADR
+# 0010) is an append-only log that is the source of truth for project state. New
+# or modified event files left unstaged would silently desync the committed
+# history from the running state, so refuse to commit while any exist outside the
+# index.
 UNSTAGED_EVENTS=$(
   {
-    git ls-files --others --exclude-standard -- ':(top).claude-factory/events/'
-    git diff --name-only -- ':(top).claude-factory/events/'
+    git ls-files --others --exclude-standard -- ':(top).claude-factory/eventstore/events/'
+    git diff --name-only -- ':(top).claude-factory/eventstore/events/'
   } | sort -u
 )
 if [[ -n "${UNSTAGED_EVENTS}" ]]; then
   echo "[pre-commit] ERROR: factory event-log files are not staged for commit:" >&2
   echo "${UNSTAGED_EVENTS}" | sed 's/^/  - /' >&2
   echo "[pre-commit] The event log is append-only and must be committed alongside your changes." >&2
-  echo "[pre-commit] Stage them with:  git add .claude-factory/events" >&2
+  echo "[pre-commit] Stage them with:  git add .claude-factory/eventstore/events" >&2
   exit 1
 fi
 
-# Check if any staged files affect the kernel build
-KERNEL_CHANGED=$(git diff --cached --name-only | grep -E \
-  '^kernel/.*\.(rs|toml)$|^kernel/Cargo\.lock$' || true)
-
-if [[ -z "${KERNEL_CHANGED}" ]]; then
-  exit 0
-fi
-
-echo "[pre-commit] Kernel source changed — rebuilding cfk (release)..."
-
-if ! command -v cargo &>/dev/null; then
-  echo "[pre-commit] ERROR: cargo not found. Run 'nix develop' to enter the devshell." >&2
-  exit 1
-fi
-
-(cd "${KERNEL_DIR}" && cargo build --release --bin cfk)
-
-CARGO_TARGET_DIR=$(cd "${KERNEL_DIR}" && \
-  cargo metadata --format-version 1 --no-deps 2>/dev/null \
-  | python3 -c "import json,sys; print(json.load(sys.stdin)['target_directory'])" \
-  || echo "${KERNEL_DIR}/target")
-
-# Use install so the replacement is atomic even while cfk is running as MCP server.
-install -m 755 "${CARGO_TARGET_DIR}/release/cfk" "${PLUGIN_BIN}"
-git add "${PLUGIN_BIN}"
-
-echo "[pre-commit] cfk rebuilt and staged."
+exit 0
