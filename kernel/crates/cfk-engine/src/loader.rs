@@ -94,10 +94,12 @@ pub async fn load_project_state_v2(
 #[expect(clippy::too_many_lines, reason = "exhaustive match over all FactoryEvent variants; each arm is a simple projection step and cannot be meaningfully split")]
 pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
     match event {
-        // No state projection: ProjectInitialized only marks creation; a triage
-        // decision's effects (completion + follow-up) are carried by separate
-        // WorkItemCompleted/WorkItemAdded events, and its rationale is retained
-        // in the event log for audit only.
+        // Audit-only events with no state projection. ProjectInitialized only
+        // marks creation. A TriageDecided's effects (completion + follow-up) and a
+        // DesignCrossCheckCompleted's generated items are each carried by their own
+        // WorkItemCompleted/WorkItemAdded events (handled below); these variants
+        // retain the decision/rationale and the generated-id list in the event log
+        // for audit, and project nothing further.
         FactoryEvent::ProjectInitialized { .. }
         | FactoryEvent::TriageDecided { .. }
         | FactoryEvent::DesignCrossCheckCompleted { .. } => {}
