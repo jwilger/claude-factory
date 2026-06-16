@@ -37,6 +37,10 @@ For the test you are reviewing, check each item. Any failure is grounds for a ve
 **6. No anticipatory production code**
 - Does the test file contain any production code beyond what's needed for the test to compile? Veto.
 
+**7. Primary success scenario & contract coverage**
+- If the test writer marked this the primary success scenario, does it assert **every value the success-path return type promises** (each field/component a caller reads)? A success test that ignores part of the return contract lets the implementer ship an unobservable field — veto.
+- If this is the FIRST test for a slice and it covers only an error/edge case (not the happy path), veto: under narrowest-change TDD the success path would never get built. The happy path must be tested first.
+
 ## Output format
 
 ```json

@@ -36,6 +36,10 @@ pub fn tdd_write_test(description: &str) -> StepPrompt {
          - Test must be behavioural (tests what the system does, not how)\n\
          - No mocks; use real I/O substitutes\n\
          - Use semantic types in test code\n\
+         - The FIRST test for a slice must cover the PRIMARY SUCCESS scenario (the\n\
+         happy path) and assert every value the success return type promises, so no\n\
+         field ships unobservable. List the Given/When/Then scenarios you are NOT\n\
+         covering (error/edge cases) so they can be scheduled next.\n\
          - Submit the complete test code in `test_content`."
     ))
 }
@@ -69,11 +73,16 @@ pub fn tdd_implement(first_error: &str) -> StepPrompt {
 pub fn tdd_impl_review(description: &str) -> StepPrompt {
     make_prompt(format!(
         "Review the implementation for the slice: {description}\n\n\
-         Checklist:\n\
-         - Is this the narrowest possible change?\n\
-         - No mocking introduced?\n\
-         - Semantic types used throughout?\n\
-         - No unrelated refactoring?\n\
+         Checklist (veto on any violation):\n\
+         - Narrowest possible change; no unrelated refactoring; no mocking introduced.\n\
+         - Functional core / imperative shell: business logic pure, I/O only at the boundary.\n\
+         - Semantic types throughout — including struct fields and error payloads. Their\n\
+         constructors must enforce invariants and return Result (parse, don't validate);\n\
+         veto unchecked casts or pass-through constructors that admit illegal values.\n\
+         - Railway-oriented errors: fallible ops return Result; no unwrap/expect/panic in\n\
+         product code.\n\
+         - Observable contract: every field/variant/return value of a public type is\n\
+         reachable by callers and asserted by a test (no private accessorless success field).\n\
          Return verdict: approved or vetoed with reason."
     ))
 }

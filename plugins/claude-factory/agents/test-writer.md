@@ -24,6 +24,8 @@ Write the **outermost, black-box, behavioral test** for this slice.
 2. **No mocks or mocking libraries.** If the test needs an I/O dependency (database, HTTP client, etc.), either use a real in-process implementation (e.g., SQLite in-memory) or a hand-written test double that implements exactly the same interface as the production dependency. Never use mocking frameworks.
 3. **Semantic types throughout.** Even in test code, use the same semantic types (newtypes, branded types) as the production code will use. No raw primitives passed where a semantic type exists.
 4. **Single behavioral assertion.** One test per Given/When/Then scenario. Do not combine multiple behaviors in one test.
+   - **4a. Primary success scenario first.** The first test you write for a slice MUST exercise its **primary success scenario** (the happy path), not only an error or edge case. Assert **every value the success-path return type promises** — each field/component a caller will read — so the implementer cannot ship a field that is private, accessorless, or otherwise unobservable. (Under narrowest-change TDD the implementer builds only what a test forces; an error-only first test leaves the success contract unbuilt.)
+   - **4b. Declare what you are NOT covering.** In your output, list every Given/When/Then scenario (success, error, and edge — e.g. boundary values, empty/whitespace, non-ASCII, inverted ranges, negatives) from the event model that this test does not cover, so the kernel can schedule them as further tests.
 5. **The test must fail.** Write only enough code to make the test compile and run — write NO production code. The test should fail for the expected reason (e.g., "function not found", "assertion failed: expected X but got Y").
 
 ## Your output
@@ -33,7 +35,9 @@ Return:
 {
   "test_file_path": "path/to/test_file",
   "expected_failure_reason": "one sentence: why this test fails right now",
-  "summary": "one sentence: what behavior this test asserts"
+  "summary": "one sentence: what behavior this test asserts",
+  "is_primary_success_scenario": true,
+  "uncovered_scenarios": ["one line per Given/When/Then scenario this test does NOT cover"]
 }
 ```
 

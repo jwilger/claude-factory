@@ -29,8 +29,10 @@ If fixing the first error requires changing more than one function, that means t
 4. Otherwise, write only the code to fix this error
 5. Apply the factory's engineering constraints:
    - Use semantic types; no raw primitives in domain code
+   - **Parse, don't validate.** A semantic type's public constructor MUST enforce its invariant and return `Result` (or be infallible by construction). Never expose an unchecked cast or pass-through as the constructor (`value as Slug`, a `Quantity(n)` that accepts negatives, a `Money.from_dollars` that lets `"abc"` throw an untyped error). A type that accepts illegal values is cosmetic, not semantic.
+   - **Raw primitives are forbidden everywhere in domain code** — not just function signatures, but struct/record fields and error-variant payloads too (no bare `u32 units`, no `ReservationError { available: u32 }`; wrap them in semantic types).
    - Functional core: business logic is a pure function (no I/O)
-   - Railway-oriented: fallible operations return Result/Either
+   - Railway-oriented: fallible operations return Result/Either; a constructor that can logically fail must not return a bare value or throw
    - No I/O in the functional core; use the effect pattern for I/O requests
 
 ## Output format
@@ -48,7 +50,8 @@ If `needs_drill_down` is true: explain in `change_description` what multiple thi
 
 ## Engineering constraints reminder
 
-- Every domain value is a semantic type. Never `String` where a `UserId` belongs.
+- Every domain value is a semantic type, and its constructor enforces the invariant (parse, don't validate) — never an unchecked cast or a pass-through that accepts illegal values. This applies to struct fields and error payloads, not just signatures.
+- A success-path return type's fields must be observable by callers (public accessor / public field) — never ship a value the test cannot read.
 - Pure functions cannot perform I/O. If the implementation needs I/O, it must be behind an effect/trait boundary.
 - Errors are typed. No `unwrap()`, no `panic!()` in production code paths.
 - Clippy pedantic is always on. Write code that passes the linter.
