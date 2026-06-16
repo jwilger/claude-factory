@@ -10,14 +10,44 @@ The conductor is a dumb dispatcher. The kernel (`cfk`) is the program; the condu
 
 ```
 while true:
-  step = cf_next_step()
-  if step.action == "idle": display status; stop
-  if step.action == "ask_human": present to user; collect answer; cf_decide(step.id, answer)
-  if step.action == "spawn_agent": dispatch agent (see below); cf_submit(step.id, result)
-  if step.action == "run_check": wait for cf_run_check to complete; cf_submit(step.id, result)
+  resp = cf_next_step()
+  if resp.status == "idle": display status; stop
+  switch resp.action.type:
+    ask_human    → present resp to user; collect answer; cf_decide(step_id, answer)
+    spawn_agent  → dispatch the agent (see below); submit via the tool the PROMPT names
+    gate_review  → dispatch the reviewer agent; cf_gate(step_id, verdict)
+    run_check    → cf_run_check(check_name); the kernel records and advances
+    open_pr      → open the PR for the slice; cf_pr_open(...)
+    run_pr_poll  → cf_pr_poll(...)
+    merge_pr     → cf_pr_merge(...)
 ```
 
-Never embellish the kernel's prompt. Never reroute to a different agent. Never skip cf_submit. The kernel's decision is authoritative.
+Never embellish the kernel's prompt. Never reroute to a different agent. Never skip the submit step. The kernel's decision is authoritative.
+
+## Which submit tool
+
+A `spawn_agent` step's **prompt names the submit tool** — always follow it. `cf_submit` is the default (TDD steps, PR-comment triage); specific phases instruct otherwise:
+
+| Prompt instructs | Phase / step |
+|---|---|
+| `cf_submit` | TDD test/implement, PR comment triage |
+| `cf_discovery_submit` | discovery brief |
+| `cf_adr_submit` | architecture ADR draft |
+| `cf_triage_submit` | architecture / design **triage** gate |
+| `cf_design_add_component` | design-system component build |
+
+If you ever cannot tell which tool to call, re-read the prompt's final "Submit via …" line. Do not substitute a different tool.
+
+## Autonomy policy (where humans are in the loop)
+
+The kernel decides *what* runs; this policy decides *whether to pause for the operator* after a `spawn_agent` step, keyed on `resp.phase`:
+
+- **Discovery, Architecture, Design-system → interactive.** These are human-decision phases. Run the agent to produce its analysis/recommendation, then present it to the operator (`AskUserQuestion`) and submit the operator's decision — e.g. for a triage step, pass the operator's `needs_followup` choice to `cf_triage_submit`. Never let the agent's recommendation auto-commit the decision.
+- **Event modeling → lightly interactive.** Follow the operator's lead: surface modeling choices when they are consequential, otherwise proceed.
+- **Development → fully autonomous.** Run the red-green-refactor loop without pausing. The only human gate in development/review is the **PR review gate** (the `gate_review` on the open PR, and final merge approval).
+- **Review → autonomous** except the PR review gate above.
+
+This is the contract: a feature flows discovery → modeled → architecture/design (interactive gates) → built autonomously → merged after the PR review gate, with the operator touched only at those planned points.
 
 ## Dispatching agents
 
