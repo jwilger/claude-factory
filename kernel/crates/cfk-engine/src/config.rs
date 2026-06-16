@@ -43,6 +43,11 @@ pub fn default_routing_table() -> RoutingTable {
                 notes: None,
             },
             RoutingEntry {
+                work_type: WorkType::ArchitectureTriage,
+                executor: claude(ClaudeModel::Sonnet, "architecture-triage"),
+                notes: Some("Per-slice architecture gate: decide whether an ADR is required.".into()),
+            },
+            RoutingEntry {
                 work_type: WorkType::AdrDrafting,
                 executor: claude(ClaudeModel::Sonnet, "architect"),
                 notes: None,
@@ -51,6 +56,11 @@ pub fn default_routing_table() -> RoutingTable {
                 work_type: WorkType::AdrReview,
                 executor: codex("gpt-5.5", CodexEffort::High),
                 notes: Some("Cross-family ADR review: GPT checks for conflicts from a different perspective.".into()),
+            },
+            RoutingEntry {
+                work_type: WorkType::DesignTriage,
+                executor: claude(ClaudeModel::Sonnet, "design-triage"),
+                notes: Some("Per-slice design gate: decide whether UI components must be built.".into()),
             },
             RoutingEntry {
                 work_type: WorkType::DesignSystemBuild,
@@ -99,7 +109,36 @@ pub fn default_routing_table() -> RoutingTable {
 #[cfg(test)]
 mod tests {
     use super::default_routing_table;
-    use cfk_core::types::routing::{CodexModel, ExecutorSpec};
+    use cfk_core::types::routing::{CodexModel, ExecutorSpec, WorkType};
+
+    /// Every work type the kernel can dispatch must have a routing entry, or
+    /// `cf_next_step` fails to build a step. The per-slice triage gates
+    /// (ADR 0011) are dispatchable work types and must resolve.
+    #[test]
+    fn default_routing_resolves_every_work_type() {
+        let table = default_routing_table();
+        for work_type in [
+            WorkType::SocraticDiscovery,
+            WorkType::EventModelAuthoring,
+            WorkType::ArchitectureTriage,
+            WorkType::AdrDrafting,
+            WorkType::AdrReview,
+            WorkType::DesignTriage,
+            WorkType::DesignSystemBuild,
+            WorkType::OuterBehavioralTestWriting,
+            WorkType::TestReview,
+            WorkType::NarrowestStepImplementation,
+            WorkType::ImplementationReview,
+            WorkType::MechanicalTransform,
+            WorkType::PrCommentTriage,
+            WorkType::Research,
+        ] {
+            assert!(
+                table.resolve(work_type).is_some(),
+                "no routing entry for {work_type:?}"
+            );
+        }
+    }
 
     /// The Codex CLI rejects the model `o4-mini` under a ChatGPT account, so the
     /// default routing table must never specify it for any work type. Review work

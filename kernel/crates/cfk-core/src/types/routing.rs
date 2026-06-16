@@ -10,8 +10,14 @@ use serde::{Deserialize, Serialize};
 pub enum WorkType {
     SocraticDiscovery,
     EventModelAuthoring,
+    /// Per-slice architecture gate: decide whether the slice forces a new ADR
+    /// (ADR 0011). Fast-passes by default; only spawns drafting when needed.
+    ArchitectureTriage,
     AdrDrafting,
     AdrReview,
+    /// Per-slice design gate: decide whether the slice needs UI components built
+    /// (ADR 0011/0012). Fast-passes for non-UI slices or sufficient inventory.
+    DesignTriage,
     DesignSystemBuild,
     OuterBehavioralTestWriting,
     TestReview,
