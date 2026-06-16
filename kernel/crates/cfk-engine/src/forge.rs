@@ -188,13 +188,13 @@ impl ForgeAdapter for MemoryForge {
 
 // ── GiteaForge ───────────────────────────────────────────────────────────────
 
-/// Gitea REST API forge adapter.
+/// Forgejo/Gitea REST API forge adapter (the two share one REST API).
 ///
-/// Reads connection details from environment variables:
-/// - `GITEA_URL` — base URL (e.g. `https://git.example.com`)
-/// - `GITEA_TOKEN` — personal-access or API token
-/// - `GITEA_OWNER` — repository owner (user or org name)
-/// - `GITEA_REPO` — repository name
+/// Connection details come from environment variables, accepting `FORGEJO_*`,
+/// `FORGE_*`, or `GITEA_*` names (see [`GiteaForge::from_env`]):
+/// - `*_URL` — base URL (e.g. `https://git.example.com`); inferred from the git remote if unset
+/// - `*_TOKEN` — personal-access or API token (required)
+/// - `*_OWNER` / `*_REPO` — repository owner and name; inferred from the git remote if unset
 pub struct GiteaForge {
     client: reqwest::Client,
     base_url: String,
@@ -205,22 +205,24 @@ pub struct GiteaForge {
 
 impl GiteaForge {
     /// Build from environment variables, falling back to the git remote for
-    /// non-secret values (`GITEA_URL`, `GITEA_OWNER`, `GITEA_REPO`).
+    /// non-secret values (host, owner, repo).
     ///
-    /// Only `GITEA_TOKEN` is always required from the environment — the host,
-    /// owner, and repo can be inferred from `git remote get-url origin`.
+    /// Accepts `FORGEJO_*`, `FORGE_*`, and `GITEA_*` env names (in that priority)
+    /// for `*_TOKEN`, `*_URL`, `*_OWNER`, `*_REPO` — Forgejo and Gitea share one
+    /// REST API. Only the token is always required; the host, owner, and repo are
+    /// inferred from `git remote get-url origin` when not set.
     ///
     /// # Errors
-    /// Returns an error if the token is absent or the remote cannot be parsed.
+    /// Returns an error if no token is set or the remote cannot be parsed.
     pub fn from_env() -> Result<Arc<Self>, ForgeConfigError> {
-        let token = std::env::var("GITEA_TOKEN")
-            .map_err(|_| ForgeConfigError::MissingEnvVar { var: "GITEA_TOKEN" })?;
+        let token = env_any(&["FORGEJO_TOKEN", "FORGE_TOKEN", "GITEA_TOKEN"])
+            .ok_or(ForgeConfigError::MissingEnvVar { var: "FORGEJO_TOKEN" })?;
 
-        let (base_url, owner, repo) = match (
-            std::env::var("GITEA_URL").ok(),
-            std::env::var("GITEA_OWNER").ok(),
-            std::env::var("GITEA_REPO").ok(),
-        ) {
+        let url = env_any(&["FORGEJO_URL", "FORGE_URL", "GITEA_URL"]);
+        let owner = env_any(&["FORGEJO_OWNER", "FORGE_OWNER", "GITEA_OWNER"]);
+        let repo = env_any(&["FORGEJO_REPO", "FORGE_REPO", "GITEA_REPO"]);
+
+        let (base_url, owner, repo) = match (url, owner, repo) {
             (Some(u), Some(o), Some(r)) => (u, o, r),
             (url_opt, owner_opt, repo_opt) => {
                 let (git_url, git_owner, git_repo) = parse_git_remote()?;
@@ -238,6 +240,13 @@ impl GiteaForge {
 
         Ok(Arc::new(Self { client, base_url, token, owner, repo }))
     }
+}
+
+/// First non-empty value among the given environment variable names.
+fn env_any(names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
 }
 
 /// Parse `git remote get-url origin` into `(base_url, owner, repo)`.
