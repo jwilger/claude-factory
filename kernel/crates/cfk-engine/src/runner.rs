@@ -62,37 +62,44 @@ pub async fn run_check(command: &str, working_dir: &Path) -> Result<CheckResult,
 
 /// Extract the first meaningful error line from compiler / test output.
 ///
-/// Recognises rustc `error[E…]` lines, cargo `FAILED` lines, and generic
-/// `error:` / `Error:` prefixes.  Falls back to the first non-blank line if
-/// nothing more specific is found.
+/// Prefers the most *actionable* detail over summary lines, so the implementer
+/// agent is handed the real cause (e.g. `ImportError: cannot import name 'x'` or
+/// `AssertionError: 250 != 175`) rather than a framework summary like
+/// `FAILED (errors=1)`. Recognises, in priority order: rustc structured errors,
+/// Rust panics, typed exceptions / `error:` prefixes (Python, JS, generic),
+/// pytest assertion (`E   …`) lines, then the cargo/unittest `FAILED` summary as
+/// a fallback, and finally the first non-blank line.
 #[must_use]
 pub fn extract_first_error(output: &str) -> Option<String> {
-    // Priority 1: rustc structured errors (e.g. `error[E0308]: mismatched types`)
-    if let Some(line) = output.lines().find(|l| {
-        let t = l.trim_start();
-        t.starts_with("error[E") || t.starts_with("error[W")
-    }) {
-        return Some(line.trim().to_string());
-    }
+    let find = |pred: &dyn Fn(&str) -> bool| {
+        output.lines().find(|l| pred(l.trim())).map(|l| l.trim().to_string())
+    };
 
-    // Priority 2: cargo test failure lines
-    if let Some(line) = output.lines().find(|l| {
-        let t = l.trim_start();
-        t.starts_with("FAILED") || t.contains("test result: FAILED")
-    }) {
-        return Some(line.trim().to_string());
+    // 1: rustc structured errors (e.g. `error[E0308]: mismatched types`)
+    if let Some(line) = find(&|t| t.starts_with("error[E") || t.starts_with("error[W")) {
+        return Some(line);
     }
-
-    // Priority 3: generic error/Error prefix
-    if let Some(line) = output.lines().find(|l| {
-        let t = l.trim_start();
-        t.starts_with("error:") || t.starts_with("Error:")
-    }) {
-        return Some(line.trim().to_string());
+    // 2: Rust panics (the failing assertion site)
+    if let Some(line) = find(&|t| t.contains("panicked at")) {
+        return Some(line);
     }
-
-    // Fallback: first non-blank line
-    output.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
+    // 3: typed exceptions / error prefixes — the actionable cause across most
+    //    languages (`ImportError: …`, `AssertionError: …`, `error: …`)
+    if let Some(line) = find(&|t| {
+        t.starts_with("error:") || t.contains("Error: ") || t.contains("Exception: ")
+    }) {
+        return Some(line);
+    }
+    // 4: pytest assertion detail lines (`E   assert 1 == 2`)
+    if let Some(line) = find(&|t| t.starts_with("E   ")) {
+        return Some(line);
+    }
+    // 5: cargo/unittest failure summary (fallback when no detail line was found)
+    if let Some(line) = find(&|t| t.starts_with("FAILED") || t.contains("test result: FAILED")) {
+        return Some(line);
+    }
+    // 6: first non-blank line
+    find(&|t| !t.is_empty())
 }
 
 #[cfg(test)]
@@ -118,6 +125,57 @@ mod tests {
         assert_eq!(
             extract_first_error(output),
             Some("error: something went wrong".to_string())
+        );
+    }
+
+    #[test]
+    fn prefers_typed_exception_over_failed_summary() {
+        // Python unittest: the real cause is the ImportError, not the summary line.
+        let output = "E\n\
+             ======================================================================\n\
+             ERROR: test_zero (test_late_fee.LateFeeTest)\n\
+             Traceback (most recent call last):\n  \
+               File \"tests/test_late_fee.py\", line 2, in <module>\n    \
+                 from src.late_fee import late_fee\n\
+             ImportError: cannot import name 'late_fee'\n\
+             ----------------------------------------------------------------------\n\
+             Ran 1 test in 0.001s\n\nFAILED (errors=1)\n";
+        assert_eq!(
+            extract_first_error(output),
+            Some("ImportError: cannot import name 'late_fee'".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_assertion_error_over_summary() {
+        let output = "AssertionError: 250 != 175\nFAILED (failures=1)\n";
+        assert_eq!(
+            extract_first_error(output),
+            Some("AssertionError: 250 != 175".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_pytest_assertion_line() {
+        let output = "tests/test_x.py::test_a FAILED\nE   assert 1 == 2\n";
+        assert_eq!(extract_first_error(output), Some("E   assert 1 == 2".to_string()));
+    }
+
+    #[test]
+    fn falls_back_to_failed_summary_when_no_detail() {
+        let output = "running 3 tests\ntest result: FAILED. 2 passed; 1 failed\n";
+        assert_eq!(
+            extract_first_error(output),
+            Some("test result: FAILED. 2 passed; 1 failed".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_rust_panic_line() {
+        let output = "running 1 test\nthread 'it' panicked at src/lib.rs:5:9:\nassertion failed\n";
+        assert_eq!(
+            extract_first_error(output),
+            Some("thread 'it' panicked at src/lib.rs:5:9:".to_string())
         );
     }
 
