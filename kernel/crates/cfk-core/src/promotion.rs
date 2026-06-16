@@ -35,7 +35,9 @@ pub struct ChainHead {
 /// caller so this function stays free of emc concerns.
 ///
 /// Returns `None` when the chain is already as far along as the existing items
-/// allow — nothing to spawn yet.
+/// allow — nothing to spawn yet. A phase whose only items are `Abandoned`
+/// (no `Done`) is intentionally NOT re-seeded: abandoning a slice's sole gate
+/// stops that slice's chain (re-add work explicitly to resume it).
 #[must_use]
 pub fn next_slice_promotion(
     existing: &[(PhaseKind, WorkItemStatus)],

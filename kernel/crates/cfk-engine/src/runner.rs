@@ -84,10 +84,10 @@ pub fn extract_first_error(output: &str) -> Option<String> {
         return Some(line);
     }
     // 3: typed exceptions / error prefixes — the actionable cause across most
-    //    languages (`ImportError: …`, `AssertionError: …`, `error: …`)
-    if let Some(line) = find(&|t| {
-        t.starts_with("error:") || t.contains("Error: ") || t.contains("Exception: ")
-    }) {
+    //    languages (`ImportError: …`, `AssertionError: …`, `error: …`). Require
+    //    the marker at the line's first token so a benign mid-sentence
+    //    "… Error: handled" doesn't shadow a later real error.
+    if let Some(line) = find(&is_typed_error) {
         return Some(line);
     }
     // 4: pytest assertion detail lines (`E   assert 1 == 2`)
@@ -100,6 +100,17 @@ pub fn extract_first_error(output: &str) -> Option<String> {
     }
     // 6: first non-blank line
     find(&|t| !t.is_empty())
+}
+
+/// Whether a trimmed line names a typed error at its first token — `error:`,
+/// `<Word>Error:`, or `<Word>Exception:` (e.g. `ImportError:`, `AssertionError:`)
+/// — as opposed to merely mentioning "Error:" mid-sentence.
+fn is_typed_error(t: &str) -> bool {
+    if t.starts_with("error:") {
+        return true;
+    }
+    let first = t.split_whitespace().next().unwrap_or("");
+    first.ends_with("Error:") || first.ends_with("Exception:")
 }
 
 #[cfg(test)]
@@ -152,6 +163,15 @@ mod tests {
         assert_eq!(
             extract_first_error(output),
             Some("AssertionError: 250 != 175".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_benign_mid_sentence_error_mention() {
+        let output = "note: Previous Error: handled gracefully\nerror: real compile failure\n";
+        assert_eq!(
+            extract_first_error(output),
+            Some("error: real compile failure".to_string())
         );
     }
 

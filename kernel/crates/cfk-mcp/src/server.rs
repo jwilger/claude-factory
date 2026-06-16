@@ -408,8 +408,13 @@ fn work_item_summary(item: &WorkItem) -> WorkItemSummary {
 /// and the manual `cf_ingest_slices` backfill so both seed the chain identically
 /// (a slug already in the chain yields nothing, never a phase-skipping item).
 fn compute_slice_promotions(proj: &ProjectState, slices: &[EmcSlice]) -> Vec<WorkItem> {
+    // Defend against a verified model emitting the same slug more than once
+    // (e.g. a re-edited slice): only the first occurrence seeds the chain, so a
+    // single call never spawns two heads for one slug.
+    let mut seen = std::collections::HashSet::new();
     slices
         .iter()
+        .filter(|slice| seen.insert(slice.slug.as_str()))
         .filter_map(|slice| {
             let existing: Vec<(PhaseKind, WorkItemStatus)> = proj
                 .work_items
@@ -1626,10 +1631,10 @@ triage — so the slice's chain waits for that work before advancing.")]
             let Some(item) = proj.work_items.iter().find(|i| i.id == work_item_id) else {
                 return Ok(tool_error(format!("work item {} not found", params.work_item_id)));
             };
-            if item.status == WorkItemStatus::Done {
+            if matches!(item.status, WorkItemStatus::Done | WorkItemStatus::Abandoned) {
                 return Ok(tool_error(format!(
-                    "work item {} is already Done",
-                    params.work_item_id
+                    "work item {} is already {:?}; cannot submit a triage decision",
+                    params.work_item_id, item.status
                 )));
             }
             let (followup_phase, followup_type) = match item.work_type {

@@ -16,8 +16,8 @@ use std::path::Path;
 use cfk_core::types::{phase::PhaseKind, routing::WorkType};
 use cfk_engine::forge::MemoryForge;
 use cfk_mcp::server::{
-    AdrSubmitParams, BacklogAddParams, CfkServer, IngestSlicesParams, InitParams, NextStepParams,
-    PhaseFilterParams, TriageSubmitParams,
+    AbandonParams, AdrSubmitParams, BacklogAddParams, CfkServer, IngestSlicesParams, InitParams,
+    NextStepParams, PhaseFilterParams, TriageSubmitParams,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, RawContent};
@@ -334,6 +334,33 @@ async fn ready_architecture_item_gets_draft_prompt_then_review_gate() {
         j2["action"]
     );
     assert_eq!(j2["action"]["gate_kind"], "adr_review");
+}
+
+#[tokio::test]
+async fn triage_submit_rejected_on_abandoned_item() {
+    let dir = TempDir::new().unwrap();
+    let server = make_server(&dir).await;
+    init_project(&server, &dir).await;
+    write_verified_model(dir.path(), "checkout", &[("add-to-cart", "Add to cart", "command")]);
+    next_step(&server).await;
+    let arch_id = first_item_id(&server, PhaseKind::Architecture).await;
+
+    server
+        .cf_abandon(Parameters(AbandonParams { work_item_id: arch_id.clone() }))
+        .await
+        .expect("cf_abandon");
+
+    // Submitting a triage decision on an abandoned item must be rejected, not
+    // resurrect it to Done and spawn follow-up work.
+    let result = server
+        .cf_triage_submit(Parameters(TriageSubmitParams {
+            work_item_id: arch_id,
+            needs_followup: true,
+            rationale: "should be rejected".to_string(),
+        }))
+        .await
+        .expect("cf_triage_submit returns a tool result");
+    assert!(result.is_error.unwrap_or(false), "expected a tool error for an abandoned item");
 }
 
 #[tokio::test]
