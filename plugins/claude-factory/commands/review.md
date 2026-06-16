@@ -14,6 +14,16 @@ The review phase shepherds open PRs. The kernel returns the action to take:
 - `spawn_agent` (comment triage) → run the `pr-shepherd-triage` agent; submit via `cf_submit`.
 - `merge_pr` → `cf_pr_merge` once green and approved.
 
-The **PR review gate is a human decision** (the planned human point for development/review): present the PR's state and any review findings to the operator with `AskUserQuestion` before merging. Merge requirements (CI green, approvals) are enforced by the kernel; the human-approval requirement is configurable per repo in `.claude/claude-factory.local.md`.
+## Comprehensive dual review (run once per PR, before the merge gate)
 
-Cross-family review note: the test/implementation gates already use `codex exec` (gpt-5.5) for an independent perspective; running a `codex exec`-based review of the PR diff alongside an Opus review is the intended way to gate PR quality (the interactive `codex review` subcommand is not headless-friendly).
+After the PR is open and before merging, run the **multi-front, multi-agent review** of the PR diff — both model families, surfaced through the existing comment-triage flow:
+
+1. **codex (gpt-5.5):** run `bash ${CLAUDE_PLUGIN_ROOT}/scripts/codex-review.sh main` from the product repo (reviews the branch vs `main`; prints severity-tagged `[P#] title — file:line` findings).
+2. **Opus 4.8:** dispatch the `implementation-reviewer` agent (model: opus) over the **whole PR diff** (`git diff main...HEAD`), applying the full engineering baseline.
+3. Collect both families' findings. For each actionable finding, either fix it (re-enter development for that slice) or post it as a PR comment via the forge so the kernel's poll surfaces it as a `pr-shepherd-triage` item. Empirically the codex (cross-family) gate in development already catches the substantive defects and the Opus pass is a near-redundant safety net — but running both is the standard, since the two families have complementary blind spots (e.g. codex is stronger on runtime type-soundness in type-erased languages).
+
+A PR with no surviving actionable findings, green CI, and approval is ready to merge.
+
+## The merge gate is a human decision
+
+The **PR review gate is the planned human point for development/review**: present the PR's state and the dual-review findings to the operator with `AskUserQuestion` before merging. Merge requirements (CI green, approvals) are enforced by the kernel; the human-approval requirement is configurable per repo in `.claude/claude-factory.local.md`.
