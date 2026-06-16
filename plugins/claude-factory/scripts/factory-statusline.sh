@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Claude-Factory statusline script.
 #
-# Reads .claude-factory/events/v1/*.json from the current working directory
-# (passed as cwd in the JSON stdin context) and prints a one-line factory
-# dashboard. Outputs nothing if this is not a factory-initialized repo.
+# Reads .claude-factory/eventstore/events/*.jsonl (eventcore-fs) from the
+# current working directory (passed as cwd in the JSON stdin context) and
+# prints a one-line factory dashboard. Outputs nothing if this is not a
+# factory-initialized repo.
 #
 # Output format: [CF] Dev:N Rev:N Disc:N Arch:N Des:N | N active
 #
@@ -25,7 +26,7 @@ except Exception:
     [[ -n "$PARSED" ]] && CWD="$PARSED"
 fi
 
-EVENT_DIR="$CWD/.claude-factory/events/v1"
+EVENT_DIR="$CWD/.claude-factory/eventstore/events"
 [[ -d "$EVENT_DIR" ]] || exit 0
 
 # Count work items by phase and status from the event log.
@@ -35,38 +36,46 @@ python3 - "$EVENT_DIR" <<'PYEOF'
 import json, os, sys, glob
 
 event_dir = sys.argv[1]
-files = sorted(glob.glob(os.path.join(event_dir, "*.json")))
+files = sorted(glob.glob(os.path.join(event_dir, "*.jsonl")))
 
-# Replay: track work items.
+# Replay: track work items from eventcore-fs JSONL format.
+# Each .jsonl file is a transaction with one "header" line and one or more
+# "event" lines. Factory events live in the "event_data" field of event records.
 items = {}  # id -> {phase, status}
 
 for path in files:
     try:
-        env = json.loads(open(path).read())
+        for line in open(path):
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if obj.get("record") != "event":
+                continue
+            payload = obj.get("event_data", {})
+            ptype = payload.get("type", "")
+
+            if ptype == "work_item_added":
+                wi = payload["work_item"]
+                items[wi["id"]] = {"phase": wi.get("phase", "?"), "status": wi.get("status", "ready")}
+            elif ptype == "lease_granted":
+                wid = payload["lease"]["work_item_id"]
+                if wid in items:
+                    items[wid]["status"] = "in_progress"
+            elif ptype == "lease_released":
+                wid = payload["work_item_id"]
+                if wid in items:
+                    items[wid]["status"] = "ready"
+            elif ptype == "work_item_completed":
+                wid = payload["work_item_id"]
+                if wid in items:
+                    items[wid]["status"] = "done"
+            elif ptype == "work_item_abandoned":
+                wid = payload["work_item_id"]
+                if wid in items:
+                    items[wid]["status"] = "abandoned"
     except Exception:
         continue
-    payload = env.get("payload", {})
-    ptype = payload.get("type", "")
-
-    if ptype == "work_item_added":
-        wi = payload["work_item"]
-        items[wi["id"]] = {"phase": wi.get("phase", "?"), "status": wi.get("status", "ready")}
-    elif ptype == "lease_granted":
-        wid = payload["lease"]["work_item_id"]
-        if wid in items:
-            items[wid]["status"] = "in_progress"
-    elif ptype == "lease_released":
-        wid = payload["work_item_id"]
-        if wid in items:
-            items[wid]["status"] = "ready"
-    elif ptype == "work_item_completed":
-        wid = payload["work_item_id"]
-        if wid in items:
-            items[wid]["status"] = "done"
-    elif ptype == "work_item_abandoned":
-        wid = payload["work_item_id"]
-        if wid in items:
-            items[wid]["status"] = "abandoned"
 
 # Count by phase for active (not done/abandoned) items.
 phase_counts = {}

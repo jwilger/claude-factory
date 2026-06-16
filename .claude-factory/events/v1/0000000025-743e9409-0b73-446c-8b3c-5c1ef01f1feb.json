@@ -1,9 +1,0 @@
-{
-  "id": "743e9409-0b73-446c-8b3c-5c1ef01f1feb",
-  "sequence": 25,
-  "timestamp": "2026-06-13T15:21:41.483124042Z",
-  "payload": {
-    "type": "work_item_completed",
-    "work_item_id": "32de5c5a-eb42-4192-aad1-50a5bc72cbc3"
-  }
-}

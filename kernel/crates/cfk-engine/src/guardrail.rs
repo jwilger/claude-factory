@@ -159,6 +159,18 @@ pub async fn check_guardrail(
     let relative = edited_file.strip_prefix(project_root).unwrap_or(edited_file);
     let path_is_protected = globs.matches(relative);
 
+    // Short-circuit: unprotected paths never need a lease, and skipping the
+    // event-store open avoids contention with a running cfk MCP server (which
+    // holds an exclusive lock on the store).
+    if !path_is_protected {
+        return Ok(decide(GuardrailFacts {
+            is_factory_project: true,
+            bypass_active: false,
+            path_is_protected: false,
+            session_holds_active_lease: false,
+        }));
+    }
+
     let store_dir = eventcore_store_dir(project_root);
     let session_holds_active_lease = if store_dir.exists() {
         let store = FileEventStore::open(&store_dir)
