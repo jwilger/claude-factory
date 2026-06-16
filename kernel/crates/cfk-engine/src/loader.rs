@@ -361,6 +361,7 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
             component_id,
             name,
             kind,
+            ownership,
             slice_ref,
         } => {
             let ds = state
@@ -374,6 +375,7 @@ pub fn apply_event(state: &mut ProjectState, event: &FactoryEvent) {
                     id: component_id.clone(),
                     name: component_name,
                     kind: *kind,
+                    ownership: *ownership,
                     slice_ref: slice_ref.clone(),
                 });
             }

@@ -205,7 +205,10 @@ pub fn design_build_component(description: &str, inventory_summary: &str) -> Ste
         "Build a design component for: {description}\n\n\
          Existing inventory:\n{inventory_summary}\n\n\
          Specify the Atomic Design level (quark/atom/molecule/organism/template/page),\n\
-         the component name, and any relevant implementation notes.\n\
-         Submit via `cf_design_add_component`."
+         the component name, the OWNERSHIP, and any relevant implementation notes.\n\
+         Ownership (ADR 0012): `platform` if the component is reusable across slices\n\
+         (typically lower levels — quarks, atoms, molecules, common organisms), or\n\
+         `slice` if it is bespoke to this slice (typically its pages and unique\n\
+         organisms). Submit via `cf_design_add_component` with `ownership`."
     ))
 }

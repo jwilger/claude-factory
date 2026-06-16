@@ -8,7 +8,7 @@ use cfk_core::{
         work_item::{WorkItem, WorkItemStatus},
     },
     types::{
-        design::AtomicKind,
+        design::{AtomicKind, ComponentOwnership},
         gate::{GateKind, GateVerdict, VetoReason},
         ids::{AdrId, ComponentId, WorkItemId},
         lease::SessionIdentity,
@@ -215,6 +215,9 @@ pub struct DesignAddComponentParams {
     pub name: String,
     /// Atomic Design level: `quark` | `atom` | `molecule` | `organism` | `template` | `page`.
     pub kind: String,
+    /// Owning layer (ADR 0012): `platform` (reusable UI library) or `slice`
+    /// (bespoke to the slice). Defaults to `slice` when omitted.
+    pub ownership: Option<String>,
     /// Optional emc slice slug this component satisfies.
     pub slice_ref: Option<String>,
 }
@@ -1728,6 +1731,14 @@ design-system agent). Marks the work item as done. \
             ))),
         };
 
+        let ownership = match params.ownership.as_deref() {
+            None | Some("slice") => ComponentOwnership::Slice,
+            Some("platform") => ComponentOwnership::Platform,
+            Some(other) => return Ok(tool_error(format!(
+                "unknown ownership '{other}': expected platform | slice"
+            ))),
+        };
+
         let component_id = ComponentId::new();
 
         let mut guard = self.state.write().await;
@@ -1736,6 +1747,7 @@ design-system agent). Marks the work item as done. \
             component_id: component_id.clone(),
             name: params.name.clone(),
             kind,
+            ownership,
             slice_ref: params.slice_ref.clone(),
         }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
 

@@ -2414,6 +2414,7 @@ mod design_system_phase {
             component_id: component_id.clone(),
             name: "ReceiveStockPage".to_string(),
             kind: AtomicKind::Page,
+            ownership: cfk_core::types::design::ComponentOwnership::Slice,
             slice_ref: None,
         }, &mut state);
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: wid.clone() }, &mut state);
@@ -2463,6 +2464,7 @@ mod design_system_phase {
             component_id: comp_id.clone(),
             name: "receive stock Page".to_string(),
             kind: AtomicKind::Page,
+            ownership: cfk_core::types::design::ComponentOwnership::Slice,
             slice_ref: None,
         }, &mut state);
 
@@ -2681,6 +2683,7 @@ mod m5_exit_criterion {
             component_id: comp_id.clone(),
             name: "WidgetListPage".to_string(),
             kind: AtomicKind::Page,
+            ownership: cfk_core::types::design::ComponentOwnership::Slice,
             slice_ref: Some("add-widget".to_string()),
         }, &mut state);
         append(root, &mut seq, FactoryEvent::WorkItemCompleted { work_item_id: ds_wid.clone() }, &mut state);

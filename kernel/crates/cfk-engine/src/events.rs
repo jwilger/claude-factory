@@ -187,6 +187,10 @@ pub enum FactoryEvent {
         component_id: cfk_core::types::ids::ComponentId,
         name: String,
         kind: cfk_core::types::design::AtomicKind,
+        /// Which layer owns the component (ADR 0012). Defaults to slice-owned for
+        /// events written before this field existed.
+        #[serde(default)]
+        ownership: cfk_core::types::design::ComponentOwnership,
         slice_ref: Option<String>,
     },
     /// The design cross-check ran and generated work items for gaps.
