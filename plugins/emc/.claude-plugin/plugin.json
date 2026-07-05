@@ -6,8 +6,8 @@
     "name": "John Wilger",
     "email": "john@johnwilger.com"
   },
-  "homepage": "https://git.johnwilger.com/Slipstream/emc",
-  "repository": "https://git.johnwilger.com/Slipstream/emc",
+  "homepage": "https://github.com/jwilger/emc",
+  "repository": "https://github.com/jwilger/emc",
   "license": "AGPL-3.0-or-later",
   "keywords": ["event-modeling", "event-sourcing", "lean4", "quint", "formal-verification"],
   "mcpServers": {
