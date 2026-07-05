@@ -1,6 +1,6 @@
 # emc plugin
 
-Packages the [emc (Event Model Compiler)](https://git.johnwilger.com/Slipstream/emc) MCP server for use with Claude Code.
+Packages the [emc (Event Model Compiler)](https://github.com/jwilger/emc) MCP server for use with Claude Code.
 
 ## What it provides
 
@@ -25,6 +25,6 @@ Without `lake` and `quint`, event model authoring works but the formal verificat
 
 ## emc tools
 
-See [emc documentation](https://git.johnwilger.com/Slipstream/emc) for the full tool reference.
+See [emc documentation](https://github.com/jwilger/emc) for the full tool reference.
 
 Key tools: `init_project`, `add_workflow`, `add_slice`, `connect_workflow`, `check_project`, `verify_project`, `review_gate`, `record_clean_review`.

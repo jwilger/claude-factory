@@ -11,7 +11,7 @@ emc (Event Model Compiler) is a Rust MCP server developed by the same author as 
 
 ## Decision
 
-**The `plugins/emc/scripts/bootstrap-emc.sh` script installs emc via `cargo install emc` (crates.io), with a git fallback to `cargo install --git https://git.johnwilger.com/Slipstream/emc` until the crates.io publication completes.**
+**The `plugins/emc/scripts/bootstrap-emc.sh` script installs emc via `cargo install emc` (crates.io), with a git fallback to `cargo install --git https://github.com/jwilger/emc` until the crates.io publication completes.**
 
 The script checks for the existence of `lake` and `quint` binaries after installation and emits a clear error with a pointer to `docs/SETUP.md` if they are missing, since `emc verify` (and therefore the event-modeling gate) requires both.
 
