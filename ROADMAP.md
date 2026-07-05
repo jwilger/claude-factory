@@ -198,7 +198,7 @@ Lease hardening; session-per-phase runbook; first scheduled routine (PR shepherd
 
 ## Open items (future ADRs)
 
-- emc crates.io publish in progress — bootstrap falls back to `cargo install --git https://git.johnwilger.com/Slipstream/emc` until then
+- emc crates.io publish in progress — bootstrap falls back to `cargo install --git https://github.com/jwilger/emc` until then
 - Lean4 + Quint runtime deps for `emc verify` — covered by `flake.nix`; product repos need same via own flake or SETUP instructions
 - `codex exec` version pinning in codex-runner.sh
 - Agent-frontmatter effort control for Claude agents — confirm during M2

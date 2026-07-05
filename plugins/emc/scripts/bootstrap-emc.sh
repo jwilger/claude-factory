@@ -22,7 +22,7 @@ if ! command -v emc &>/dev/null; then
     echo "[emc-bootstrap] emc installed from crates.io." >&2
   else
     echo "[emc-bootstrap] crates.io install failed; trying git source..." >&2
-    cargo install --git https://git.johnwilger.com/Slipstream/emc 2>&2 || {
+    cargo install --git https://github.com/jwilger/emc 2>&2 || {
       echo "[emc-bootstrap] ERROR: Failed to install emc. Ensure cargo is available and try again." >&2
       exit 1
     }

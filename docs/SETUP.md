@@ -123,7 +123,7 @@ cargo install emc
 Until then (git source):
 
 ```bash
-cargo install --git https://git.johnwilger.com/Slipstream/emc
+cargo install --git https://github.com/jwilger/emc
 ```
 
 Verify:
