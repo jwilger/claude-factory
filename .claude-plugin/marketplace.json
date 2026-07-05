@@ -28,7 +28,7 @@
       },
       "category": "development",
       "source": "./plugins/emc",
-      "homepage": "https://git.johnwilger.com/Slipstream/emc"
+      "homepage": "https://github.com/jwilger/emc"
     }
   ]
 }
